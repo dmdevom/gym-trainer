@@ -59,4 +59,4 @@ POSE_BACKEND=yolo uvicorn main:app --reload
 
 ## Notes
 
-See `LEARNINGS.md` for what broke and why.
+See [LEARNINGS.md](LEARNINGS.md) for what broke and why.
