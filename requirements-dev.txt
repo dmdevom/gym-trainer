@@ -1,0 +1,9 @@
+# What YOUR LAPTOP installs. Adds the YOLO backend on top of the deploy set.
+-r requirements.txt
+
+# CPU-only torch index. Without this line pip fetches the CUDA build and drags
+# in ~2.5GB of nvidia-* wheels you will never use.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+ultralytics
+matplotlib                # Phase 2 needs it — the angle plot is your oscilloscope
