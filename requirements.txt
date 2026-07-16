@@ -1,0 +1,17 @@
+# Pose models
+ultralytics          # YOLOv8-pose (pulls in torch — big download, be patient)
+mediapipe            # Google Pose, for the comparison
+
+# Vision + math
+opencv-python        # local dev. Swap for opencv-python-headless when you deploy.
+numpy
+matplotlib           # you'll need this in Phase 2 to plot the angle series
+
+# API (used from Phase 1 onward)
+fastapi
+uvicorn[standard]
+python-multipart     # required for file uploads — FastAPI won't tell you nicely
+
+# If pip fights you over numpy 2.x between ultralytics and mediapipe,
+# uncomment the line below and reinstall. Don't lose an hour to this.
+# numpy<2
