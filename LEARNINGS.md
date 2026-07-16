@@ -1,0 +1,195 @@
+# LEARNINGS
+
+Things that broke, and what they taught me. Written while building, so the
+numbers are the real ones off my machine.
+
+---
+
+## 1. The model never says "I don't know"
+
+The single most useful thing I learned. A pose model returns **every** keypoint
+on **every** call, whether or not it can see them.
+
+My first test photo was cropped at the thigh. YOLO returned this:
+
+```
+13   left_knee     1494.6   2025.0   0.05
+15   left_ankle    1538.8   2025.0   0.01
+16   right_ankle   1291.5   2025.0   0.00
+```
+
+The image is 2025px tall. Those points are pinned to the bottom edge with
+near-zero confidence, because the legs are not in the frame at all. No `None`,
+no exception, no missing key. It guessed and lowered the number.
+
+Then I reshot with my feet out of frame instead of my knees:
+
+```
+13   left_knee     1759.2   3882.6   0.82    <- real
+15   left_ankle    1646.7   4096.0   0.09    <- invented
+16   right_ankle   1285.3   4096.0   0.11    <- invented
+```
+
+Image height: 4096. Same fingerprint, and this time only the ankles, because
+only my feet were cropped. **The confidence tracked the crop exactly, both
+times.** That's not luck, it's the contract: you always get 17 points, and
+confidence is the only thing telling you which ones are fiction.
+
+`CONF_MIN = 0.5` in `analyzer.py` exists because of this.
+
+## 2. Confidence means confident, not correct
+
+I assumed a high confidence meant a reliable point. It doesn't.
+
+On a stock gym photo where the subject's right arm was hidden behind his torso,
+YOLO invented an entire right arm and rated it **0.84**. It put `left_wrist` at
+**0.92** roughly 300px away from the actual hand — on his shirt.
+
+MediaPipe hallucinated the same limb in the same place, but stamped
+`visibility 0.12` on it. It told me. YOLO said 0.84 and kept a straight face.
+
+So confidence is **necessary but not sufficient**. The real filter is
+confidence _plus_ geometric plausibility — bone lengths that stay constant,
+joints in a sane order, a forearm that isn't longer than an upper arm.
+
+## 3. The visualisation lied by being helpful
+
+`results[0].plot()` produced an annotated image with **no legs drawn at all**,
+while the array it came from contained four fabricated keypoints. Ultralytics
+filters keypoints below a confidence threshold before drawing.
+
+My own MediaPipe script had no such filter, so _it_ showed the truth: a chaotic
+web of landmarks dribbling down to the bottom edge. My sloppier code was the
+honest one.
+
+If I'd trusted the JPEG as ground truth I'd have built a rep counter on
+invisible garbage. **The debug view and the data are different artifacts. My
+code reads the array.**
+
+## 4. The test image was the problem, not the model
+
+`person 0.77` on the stock photo. `person 0.93` on a photo I took against a
+plain wall. That bounding-box confidence was printed on the image the whole
+time and I didn't know it was a photo-quality meter.
+
+The stock photo had: a near-black background, hard rim lighting, a dumbbell
+occluding the gripping hand, a hunched pose, one arm entirely hidden, and a
+crop at mid-thigh. Lit for drama, not for keypoints.
+
+Before blaming a model, check what you handed it.
+
+## 5. Two models disagreeing is a free quality signal
+
+Same joints, same photo, two unrelated architectures:
+
+| joint       | YOLO             | MediaPipe        | gap      |
+| ----------- | ---------------- | ---------------- | -------- |
+| left hip    | (1803.0, 2909.6) | (1804.7, 2911.0) | **2 px** |
+| left wrist  | (2289.3, 2959.0) | (2288.1, 2976.2) | 17 px    |
+| right wrist | (538.8, 1760.7)  | (512.1, 1739.1)  | 34 px    |
+| right elbow | (989.8, 2060.7)  | (997.6, 2125.9)  | 66 px    |
+
+On a 3072px-wide image. On the bad stock photo the same joints were **175px
+apart with opposite confidences**.
+
+Neither model can tell you it's wrong. **The pair of them disagreeing can.**
+Run both, compare, reject the frame past a threshold. That's the idea I'd build
+out with more time.
+
+## 6. MediaPipe deleted its entire legacy API
+
+`mp.solutions.pose` → `AttributeError: module 'mediapipe' has no attribute
+'solutions'`. Removed in **0.10.31** (Dec 2025). Not renamed — deleted.
+`mp.solutions.drawing_utils` and `POSE_CONNECTIONS` went with it.
+
+Which means essentially every MediaPipe pose tutorial online is now dead code.
+The replacement is the Tasks API, where you pass an explicit `.task` model file
+instead of a `model_complexity` int. The model stopped being a parameter and
+became an asset you manage — which I felt again on deploy day, baking the file
+into the image because the disk isn't persistent.
+
+**The library moves faster than the content about it.** Read the changelog, not
+the blog post.
+
+## 7. The 180° floating-point cliff
+
+`cos θ` for a near-straight arm evaluates to `-1.0000000000000002`.
+`math.acos` of that raises `ValueError: math domain error`. numpy's `arccos`
+quietly hands back `NaN` instead, which is worse — one NaN poisons every value
+after it in a moving average.
+
+My extended arm measured **168.9°**. The bottom of every single rep is
+near-straight, so without the clip this fires at exactly the moment the rep
+counter needs to see "extended," and I'd have spent an afternoon blaming the
+state machine.
+
+`max(-1.0, min(1.0, cosine))` before `acos`. One line.
+
+## 8. Camera geometry decides whether the signal exists
+
+A curl rotates the forearm in the sagittal plane. Shoot front-on and the
+forearm swings toward and away from the lens — the wrist barely moves in (x, y)
+while the true elbow angle sweeps 130°. The angle gets compressed into noise.
+
+Side-on puts the whole arc in the image plane, so the 2D angle ≈ the real
+angle. The cost is the far arm goes occluded, and lateral elbow flare becomes
+invisible. Worth it: for curls, the drift that matters is forward, and forward
+is what side-on shows.
+
+**No amount of model quality fixes a camera angle that discards the signal.**
+
+## 9. Deploy: RAM picks the model, CPU decides if it finishes
+
+Render's free tier is 512MB — and so is the $7 Starter tier. `import torch`
+alone is 200–350MB resident, so YOLO was never fitting in either. The first
+Render tier that runs it is $25/mo.
+
+Hugging Face Spaces free: **2 vCPU, 16GB**. Render's $85/mo Pro tier, for zero.
+
+But the number that actually mattered wasn't RAM:
+
+```
+Speed: 4.4ms preprocess, 115.1ms inference, 13.9ms postprocess
+```
+
+~133ms/frame **on my laptop**, which has more than 2 cores. Video is ~300
+frames per request. That's a 40-second floor on faster hardware than I'd be
+deploying to. RAM decides _which model_; CPU decides _whether the endpoint
+returns at all_. I picked MediaPipe on speed, not memory.
+
+## 10. The abstraction paid for itself three times
+
+I put both models behind one interface returning
+`{joint: (x_px, y_px, conf)}` to solve exactly one problem: torch not fitting
+in Render's 512MB.
+
+It then also: cut my Docker image from ~2.5GB to ~400MB and my build from ten
+minutes to one, and made the model benchmark a one-line env var instead of a
+second script.
+
+I'd have called it over-engineering if I'd planned all three. **An abstraction
+drawn along a real seam keeps paying out for reasons you didn't think of.** The
+seam here was real: 17 vs 33 keypoints, pixels vs normalised, different indices
+for the same joint.
+
+---
+
+## Smaller things that cost me time
+
+- **Person's left is on the image's right.** `left_shoulder x=1610` vs
+  `right_shoulder x=1223` — facing the camera, your left is on the viewer's
+  right. Invisible bug, wrong-arm results.
+- **MediaPipe returns normalised (0–1), YOLO returns pixels.** Mix them and you
+  get plausible, wrong angles. No error. The adapter exists partly for this.
+- **`uvicorn` owns logging config.** `logging.getLogger(__name__).info()`
+  silently goes nowhere — root sits at WARNING with no handler. Use
+  `getLogger("uvicorn.error")`.
+- **`PYTHONUNBUFFERED=1` in Docker.** Python buffers stdout when it isn't a
+  TTY, so your startup log is invisible exactly when you need it.
+- **`opencv-python` vs `opencv-python-headless`.** The former wants libGL,
+  which isn't on a slim image. Textbook deploy-day `ImportError`.
+- **`.gitignore` only ignores untracked files.** Adding a rule after you've
+  staged something does nothing.
+- **`git init` doesn't create a branch — the first commit does.** And HF Spaces
+  builds from `main`. Push `master` and it accepts it and never builds, with no
+  error at all.
