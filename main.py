@@ -100,7 +100,7 @@ async def analyze_video_endpoint(file: UploadFile = File(...)):
     # the content-type OR a known extension rather than rejecting a real clip.
     name = (file.filename or "").lower()
     looks_video = (file.content_type or "").startswith("video/") or name.endswith(
-        (".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v")
+        (".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v", ".3gp")
     )
     if not looks_video:
         return JSONResponse(
