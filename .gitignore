@@ -19,8 +19,7 @@ angle_series.json
 angle_series.png
 
 # ---- Large model weights (fetched at build time, never committed) ----
-# models/pose_landmarker_lite.task is deliberately NOT listed here: it is the
-# ~5MB prod model, tracked so the Docker build has no network dependency.
+models/pose_landmarker_lite.task
 models/pose_landmarker_heavy.task
 yolov8n-pose.pt
 
