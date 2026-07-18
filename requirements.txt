@@ -8,3 +8,12 @@ numpy
 opencv-python-headless    # NOT opencv-python — that one wants libGL, which is
                           # not on Render's image. Textbook deploy-day crash.
 mediapipe                 # 0.10.31+ has tiny deps. ~200MB resident. No torch.
+openai                    # LLM coaching (llm_coach.py) via OpenRouter's OpenAI-
+                          # compatible API. Pure Python + httpx, no heavy deps.
+                          # Optional at runtime: absent key or import -> analysis
+                          # falls back to offline rule-based coaching, so the app
+                          # runs fine without a key.
+python-dotenv             # Local dev convenience: main.py auto-loads a gitignored
+                          # .env (OPENROUTER_API_KEY, LLM_LOG_FILE) so `uvicorn` picks
+                          # the key up with no exports. In prod the real env/secret is
+                          # already set and takes precedence (load_dotenv won't override).

@@ -7,11 +7,24 @@ import time
 import uuid
 from pathlib import Path
 
+# Local dev convenience: load a gitignored .env (OPENROUTER_API_KEY, LLM_LOG_FILE, …)
+# BEFORE anything reads the environment, so `uvicorn main:app` picks the key up with no
+# exports, in any terminal, across restarts. Dev-only and optional: python-dotenv may be
+# absent (a minimal prod image) and there may be no .env - both are fine. Real env vars
+# always win: load_dotenv defaults to override=False, so a Space/Railway secret is never
+# clobbered by a stray .env.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).with_name(".env"))
+except ImportError:  # dep not installed -> just use the real environment
+    pass
+
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
+import llm_coach
 from analyzer import CONF_MIN, analyze
 from backends import get_backend
 from exercises import EXERCISES
@@ -68,6 +81,8 @@ async def lifespan(app: FastAPI):
     if "model_path" in info:
         log.info("  path         : %s", info["model_path"])
     log.info("  conf floor   : %s", CONF_MIN)
+    li = llm_coach.info()
+    log.info("  llm coaching : %s", li["model"] if li["enabled"] else "off (rule-based)")
     log.info("  results dir  : %s", RESULTS_DIR)
     log.info("─" * 52)
     yield
@@ -103,7 +118,7 @@ def index():
 @app.get("/health")
 def health():
     # Same facts as the boot banner. On Spaces this is your only window in.
-    return {"status": "ok", "conf_min": CONF_MIN, **get_backend().info()}
+    return {"status": "ok", "conf_min": CONF_MIN, "llm": llm_coach.info(), **get_backend().info()}
 
 
 @app.get("/exercises")

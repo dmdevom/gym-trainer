@@ -10,6 +10,10 @@ __pycache__/
 .venv/
 venv/
 
+# ---- Local secrets (never bake keys into the image — use Railway variables) ----
+.env
+.env.local
+
 # ---- Run / debug artifacts ----
 out/
 probe_out/

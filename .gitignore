@@ -6,6 +6,12 @@ __pycache__/
 .venv/
 venv/
 
+# ---- Local secrets (never commit real keys) ----
+# .env holds OPENROUTER_API_KEY etc. for local dev and is auto-loaded on start;
+# the committable template is .env.example.
+.env
+.env.local
+
 # ---- Run / debug artifacts ----
 out/
 probe_out/
@@ -16,6 +22,11 @@ angle_series.png
 models/pose_landmarker_lite.task
 models/pose_landmarker_heavy.task
 yolov8n-pose.pt
+
+# ---- Local test media (photos + clips; excluded from every deploy already) ----
+# Stops NEW media landing in the repo. Files already tracked under data/ stay
+# tracked; to slim the repo run `git rm -r --cached data/` (keeps local copies).
+data/
 
 # ---- Local planning notes (kept untracked; see commit "Untrack planning notes") ----
 raw-docs/
