@@ -24,5 +24,10 @@ angle_series.png
 models/pose_landmarker_heavy.task
 yolov8n-pose.pt
 
+# ---- Local test media (photos + clips; excluded from every deploy already) ----
+# Stops NEW media landing in the repo. Files already tracked under data/ stay
+# tracked; to slim the repo run `git rm -r --cached data/` (keeps local copies).
+data/
+
 # ---- Local planning notes (kept untracked; see commit "Untrack planning notes") ----
 raw-docs/
