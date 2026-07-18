@@ -54,8 +54,12 @@ export function ResultsDashboard({ result, originalUrl, onReset }: ResultsDashbo
 
       <div className="results-columns">
         <article className="result-card coaching-card">
-          <span className="card-kicker">Coach&apos;s focus</span>
-          <h3>{result.coaching.focus}</h3>
+          <span className="card-kicker">Improve &amp; next session</span>
+          {result.coaching.session_story && <p className="coach-story">{result.coaching.session_story}</p>}
+          <div className="coach-callouts">
+            <div><span>Focus next</span><strong>{result.coaching.focus}</strong></div>
+            {result.coaching.mental_cue && <div><span>Cue</span><strong className="mental-cue">{result.coaching.mental_cue}</strong></div>}
+          </div>
           <div className="coach-list">
             {result.coaching.next_session.map((item) => <p key={item}>{item}</p>)}
           </div>

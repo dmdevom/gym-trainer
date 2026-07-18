@@ -31,16 +31,28 @@ export interface AnalysisResult {
     exercise: Pick<Exercise, "key" | "name" | "vertex_name">;
     side: string;
     side_visibility: Record<string, number>;
+    coaching_source?: "llm" | "rules" | "llm+rules";
   };
   reps: number;
   full_reps: number;
   per_rep: RepGrade[];
   verdict: string;
+  form_checks?: Array<{
+    key: string;
+    label: string;
+    fault: string;
+    cue: string;
+    assessed: number;
+    flagged: number;
+    status: "ok" | "flag" | "not_assessed";
+  }>;
   coaching: {
     focus: string;
     next_session: string[];
     keep_in_mind: string[];
     muscle: string;
+    session_story?: string;
+    mental_cue?: string;
   };
   thresholds: {
     up_enter: number;
