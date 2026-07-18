@@ -1,10 +1,9 @@
 # What RENDER installs. Deliberately no torch, no ultralytics.
-# Everything here fits inside 512MB of RAM at runtime.
+# Use Python 3.12 on Linux so pip resolves mediapipe 0.10.35 instead of the
+# older Python 3.11 wheel that pulls JAX/JAXLIB.
 
 fastapi
 uvicorn[standard]
 python-multipart          # UploadFile needs this. FastAPI won't tell you nicely.
 numpy
-opencv-python-headless    # NOT opencv-python — that one wants libGL, which is
-                          # not on Render's image. Textbook deploy-day crash.
-mediapipe                 # 0.10.31+ has tiny deps. ~200MB resident. No torch.
+mediapipe==0.10.35        # Pulls opencv-contrib-python; do not install a second cv2 wheel.

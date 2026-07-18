@@ -8,12 +8,15 @@ from fastapi.responses import JSONResponse
 
 from analyzer import CONF_MIN, analyze
 from backends import get_backend
+from video_analyzer import analyze_video
 
 # uvicorn owns logging config, so borrow its logger. A bare getLogger(__name__)
 # would silently go nowhere — root sits at WARNING and nobody added a handler.
 log = logging.getLogger("uvicorn.error")
 
 MAX_BYTES = 8 * 1024 * 1024  # 512MB of RAM total. Be rude about limits.
+MAX_VIDEO_BYTES = 25 * 1024 * 1024
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".webm", ".mkv"}
 
 
 @asynccontextmanager
@@ -64,6 +67,36 @@ async def analyze_photo(file: UploadFile = File(...)):
         path = tmp.name
     try:
         result = analyze(path)
+    finally:
+        os.unlink(path)
+
+    if "error" in result:
+        return JSONResponse(status_code=422, content=result)
+    return result
+
+
+@app.post("/analyze/video")
+async def analyze_video_upload(file: UploadFile = File(...)):
+    suffix = os.path.splitext(file.filename or "")[1].lower() or ".mp4"
+    is_video = (file.content_type or "").startswith("video/") or suffix in VIDEO_EXTENSIONS
+    if not is_video:
+        return JSONResponse(
+            status_code=415,
+            content={"error": "not_a_video", "detail": f"Got {file.content_type}"},
+        )
+
+    data = await file.read(MAX_VIDEO_BYTES + 1)
+    if len(data) > MAX_VIDEO_BYTES:
+        return JSONResponse(
+            status_code=413,
+            content={"error": "too_large", "detail": "Max 25MB video."},
+        )
+
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(data)
+        path = tmp.name
+    try:
+        result = analyze_video(path)
     finally:
         os.unlink(path)
 

@@ -10,7 +10,7 @@ app_port: 7860
 # AI Gym Trainer
 
 Upload a photo of a bicep curl. Get back the elbow angle and where you are in
-the rep. Video, rep counting and form feedback to follow.
+the rep. Upload a short video to get rep counting and AI-style coaching tips.
 
 Built for the namastedev.com hackathon. Pose estimation via MediaPipe Tasks,
 served with FastAPI, deployed on Hugging Face Spaces.
@@ -18,6 +18,7 @@ served with FastAPI, deployed on Hugging Face Spaces.
 ## Try it
 
 Open `/docs` for the interactive API. `POST /analyze/photo` with an image.
+Use `POST /analyze/video` with a short video under 25MB.
 
 ```json
 {
@@ -26,6 +27,26 @@ Open `/docs` for the interactive API. `POST /analyze/photo` with an image.
   "side_analyzed": "right",
   "confidence": 0.99,
   "backend": "mediapipe"
+}
+```
+
+Video response:
+
+```json
+{
+  "reps": 3,
+  "tips": [
+    "Extend your arm more at the bottom of each rep.",
+    "Slow down slightly; controlled reps are easier to judge and usually safer."
+  ],
+  "summary": {
+    "duration_s": 8.1,
+    "frames_sampled": 90,
+    "frames_used": 73,
+    "min_elbow_angle": 48.2,
+    "max_elbow_angle": 151.7,
+    "backend": "mediapipe"
+  }
 }
 ```
 

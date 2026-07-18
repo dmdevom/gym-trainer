@@ -68,7 +68,10 @@ class MediaPipeBackend(PoseBackend):
             )
 
         opts = vision.PoseLandmarkerOptions(
-            base_options=mp_tasks.BaseOptions(model_asset_path=str(self.model_path)),
+            base_options=mp_tasks.BaseOptions(
+                model_asset_path=str(self.model_path),
+                delegate=mp_tasks.BaseOptions.Delegate.CPU,
+            ),
             running_mode=vision.RunningMode.IMAGE,
             num_poses=1,
         )
@@ -88,6 +91,11 @@ class MediaPipeBackend(PoseBackend):
         bgr = cv2.imread(image_path)
         if bgr is None:
             return None
+        return self.keypoints_from_bgr(bgr)
+
+    def keypoints_from_bgr(self, bgr):
+        import cv2
+
         h, w = bgr.shape[:2]
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
