@@ -1,0 +1,30 @@
+# The prod image needs only the runtime files:
+#   main.py analyzer.py backends.py video.py reps.py
+#   models/pose_landmarker_lite.task requirements.txt README.md
+# Everything listed below is excluded from the Docker build context.
+
+# ---- Python bytecode ----
+__pycache__/
+*.pyc
+
+# ---- Virtualenvs ----
+.venv/
+venv/
+
+# ---- Run / debug artifacts ----
+out/
+probe_out/
+angle_series.json
+angle_series.png
+
+# ---- Large weights not used by the prod (mediapipe-lite) image ----
+models/pose_landmarker_heavy.task
+yolov8n-pose.pt
+
+# ---- Dev-only / non-runtime ----
+.git/
+data/
+scripts/
+raw-docs/
+requirements-dev.txt
+LEARNINGS.md
