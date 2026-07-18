@@ -267,6 +267,68 @@ One rebuild, app up, `/health` green. This is #6 seen from the other side: the
 library moves faster than the Dockerfile written against it. When a shared object
 won't load, `ldd` the thing that fails — don't bisect the apt line.
 
+## 15. Three exercises turned out to be one, plus a table
+
+Adding barbell curl and squat next to the bicep curl looked like three rep
+counters. It's one. Strip a curl and a squat down to the signal and they're the
+same shape: a joint angle that sits high (arm straight, legs standing), dips low
+(arm curled, hips down), and comes back. The hysteresis state machine that finds
+the cycles never changed a line. What changed was a **table**: which three
+landmarks make the angle (elbow vs knee), where the thresholds sit (a curl bottoms
+near 40°, a squat near 90°), and what the coaching says.
+
+So `exercises.py` is a frozen dataclass and three instances, and the pipeline
+reads joints and thresholds off it. `video.py` measures whatever triplet it's
+handed; `reps.py` counts whatever series it's given; the squat's knee flows
+through the exact code the curl's elbow does.
+
+The tell I'd built it right: on a squat clip the *elbow* never crosses the curl's
+thresholds, and on a curl clip the *knee* never crosses the squat's — each
+exercise counts zero on the other's footage, for free, because the only thing
+that changed was the numbers. **When a new feature feels like N copies, look for
+the axis they vary on; usually it's data, and the code is already written.** Same
+bet as `backends.py` (#10), one layer up.
+
+## 16. A spinner is a lie; a progress bar cost me a second request
+
+Analysis takes 20–30s, and the old endpoint did the honest thing badly: it held
+the POST open, ran MediaPipe and the encoder, and returned the finished result.
+The browser could only show a spinner — no idea if it was 10% or 90% done, or
+stuck.
+
+You can't stream a percentage out of a request whose whole body is one blocking
+call. So the one request became two: POST registers a job, kicks the work onto a
+background task, and returns a token **immediately**; the page polls
+`GET /progress/{token}` every 600ms and draws a real bar. The renderer takes a
+`progress_cb(stage, pct)` and calls it through its two passes (detect 0–40%, draw
+40–98%).
+
+Two things that could have bitten and didn't: the callback fires from the
+threadpool worker (annotate_video is sync, off the event loop) and just writes two
+ints into a dict — safe enough under the GIL for a status line, no lock. And I
+polled instead of Server-Sent Events on purpose: SSE buffers behind the proxies in
+front of Spaces, a poll is a plain GET that can't. **"Show progress" isn't a UI
+task; it's a request-shape decision — you can't report on work you're blocking on.**
+
+## 17. The preview lied by shrinking it
+
+Checking the end card, the thin grey text looked doubled — a faint echo shifted
+right on every line, while the bold orange "3/3" was crisp. I went hunting for a
+double-draw in the text helper, then rendered the card straight to PNG to skip the
+video codec: still there. Then I cropped one line at 1:1, no resize — **pixel
+clean.**
+
+The echo was never in the render. The image viewer downscales a 540px-wide frame
+to show it, and downsampling thin anti-aliased strokes aliases them into a ghost;
+the bold text has enough stroke to survive the shrink. I'd been debugging the
+preview, not the pixels.
+
+This is #3 again from a new angle: there I trusted a *helpful* visualisation
+(Ultralytics hiding low-confidence points) over the array; here I trusted a
+*downscaled* one over the buffer. **The thing on your screen is an artifact of how
+it was displayed, not the ground truth. When a render looks wrong, check it at
+native resolution before you touch the code.**
+
 ---
 
 ## Smaller things that cost me time
@@ -288,3 +350,7 @@ won't load, `ldd` the thing that fails — don't bisect the apt line.
 - **`git init` doesn't create a branch — the first commit does.** And HF Spaces
   builds from `main`. Push `master` and it accepts it and never builds, with no
   error at all.
+- **The browser records the codec we already write.** The Record button uses
+  `MediaRecorder` with `video/webm;codecs=vp8` — the same VP8 (#12) the renderer
+  encodes and the server serves. Record and render meet in the middle: the clip the
+  user films is already the one format everything downstream speaks, no transcode.

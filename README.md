@@ -9,9 +9,11 @@ app_port: 7860
 
 # AI Gym Trainer
 
-Upload a side-on video of bicep curls. Get your reps counted, each one graded for
-depth and tempo, and the whole analysis painted back onto the video — skeleton,
-live elbow angle, and a running rep counter.
+Upload *or record* a side-on set — single-arm bicep curl, barbell curl, or squat.
+Get your reps counted, each one graded for depth and tempo, and the whole analysis
+painted back onto the video: skeleton, live joint angle, a traffic-light
+range-of-motion gauge, a tempo bar, per-rep form notes, and an end card that sums
+up the set and says what to work on next.
 
 Built for the namastedev.com hackathon. Pose estimation via MediaPipe Tasks,
 served with FastAPI, deployed on Hugging Face Spaces (Docker).
@@ -20,25 +22,31 @@ served with FastAPI, deployed on Hugging Face Spaces (Docker).
 
 ## Try it
 
-Open `/` for the upload page: pick a clip, wait ~15 s, and watch the annotated
-video next to a per-rep table and the elbow-angle chart. Or drive it directly:
+Open `/`: pick an exercise, **upload or record** a side-on clip, watch a real
+progress bar, then get the annotated video next to a per-rep table, the angle
+chart, and a coaching card ("what to work on next session"). Or drive it directly:
 
-- `POST /analyze/video` — a video in, JSON out (rep count, per-rep grade, angle
-  series) plus a `/results/<id>` URL for the rendered `.webm`.
+- `GET  /exercises` — the movements on offer (name + how to film each).
+- `POST /analyze/video` — a video (plus an `exercise` field) in, a `{token}` back.
+- `GET  /progress/{token}` — poll for `{stage, pct, done}`; the final payload
+  carries the full summary and a `/results/<id>` URL for the rendered `.webm`.
 - `POST /analyze/photo` — a single frame in, elbow angle + phase out.
-- `python analyze.py clip.mp4` — the graded summary in your terminal.
+- `python analyze.py clip.mp4` — the graded summary + coaching in your terminal
+  (`EXERCISE=squat python analyze.py clip.mp4` for the others).
 - `python render.py clip.mp4` — just the annotated video, to `out/annotated.webm`.
 
-Example `/analyze/video` response:
+Example final `/progress` payload (the analysis summary):
 
 ```json
 {
+  "meta": { "exercise": { "name": "Single-arm Bicep Curl", "vertex_name": "elbow" }, "side": "right" },
   "reps": 3,
   "full_reps": 3,
   "verdict": "3/3 full reps",
   "per_rep": [
-    { "number": 1, "min_angle": 53.6, "duration_s": 2.7, "full": true, "issues": [] }
+    { "number": 1, "min_angle": 53.6, "depth_pct": 100, "duration_s": 2.7, "full": true, "tags": [], "issues": [] }
   ],
+  "coaching": { "focus": "Progressive overload", "next_session": ["…"], "keep_in_mind": ["…"], "muscle": "…" },
   "video_url": "/results/…"
 }
 ```
@@ -46,16 +54,20 @@ Example `/analyze/video` response:
 ## How it works
 
 ```
-video.py    ->  a smoothed per-frame elbow-angle series      (the signal)
-reps.py     ->  hysteresis state machine counts cycles,
-                then grades each on depth + tempo             (the meaning)
-analyze.py  ->  summarize(): one dict the CLI, API and video share
-render.py   ->  paints that summary onto every frame -> VP8/webm
-main.py     ->  FastAPI: the page, the endpoints, serving the result
+exercises.py ->  each movement as data: which joints, which thresholds, which cues
+video.py     ->  a smoothed per-frame joint-angle series      (the signal)
+reps.py      ->  hysteresis state machine counts cycles,
+                 then grades each on depth + tempo             (the meaning)
+analyze.py   ->  summarize() + coaching(): one dict the CLI, API and video share
+render.py    ->  paints that summary onto every frame -> VP8/webm
+main.py      ->  FastAPI: the page, a job/poll progress model, serving the result
 ```
 
-Two decisions worth knowing:
+Three decisions worth knowing:
 
+- Three exercises, **one** pipeline: a curl and a squat are the same
+  high→low→high angle signal, so only a table of joints + thresholds differs
+  (`exercises.py`). The rep-counting state machine is untouched. See LEARNINGS.md #15.
 - The rep count **on the video** and the rep count **in the JSON** are the same
   number by construction — one detection pass feeds both, and the on-screen
   counter is literally "reps whose end-time has passed." See LEARNINGS.md #13.

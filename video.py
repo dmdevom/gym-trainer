@@ -1,5 +1,6 @@
 """
-Phase 2 core: a video file -> a per-frame elbow angle series -> a plot.
+Phase 2 core: a video file -> a per-frame joint-angle series -> a plot.
+(Which joint - elbow, knee - is the exercise's business now; see exercises.py.)
 
 This is plumbing. Read it, don't write it - reps.py is where your hour goes.
 But there are four decisions baked in here that are worth understanding,
@@ -12,7 +13,8 @@ because each one is a bug you would otherwise have to find by hand:
   4. The tracked arm is chosen ONCE per video, from the whole video.
 
 Usage:
-    ROTATE_DEG=270 python video.py data/videos/curls_good.mp4
+    python video.py data/videos/curl_right.mp4
+    EXERCISE=squat ROTATE_DEG=270 python video.py clip.mp4
 
 Writes angle_series.png (look at it) and angle_series.json (feed it to reps.py).
 """
@@ -34,6 +36,7 @@ from mediapipe.tasks import python as mp_tasks
 from mediapipe.tasks.python import vision as mp_vision
 
 from analyzer import calc_angle  # Phase 1's trig, reused unchanged. That was the point.
+from exercises import Exercise, get_exercise
 
 MODEL_PATH = Path(os.environ.get("POSE_MODEL", "models/pose_landmarker_lite.task"))
 CONF_MIN = 0.5      # the threshold you validated in Phase 0: real joints 0.81-1.00, fake limb 0.12
@@ -44,11 +47,10 @@ SMOOTH_K = 5        # median window: 5 samples at 10 Hz = 0.5 s. A curl is 2-3 s
 # Set from probe_video.py's four pictures. None = trust the file's metadata.
 ROTATE_DEG = int(os.environ["ROTATE_DEG"]) if "ROTATE_DEG" in os.environ else None
 
-# BlazePose 33-landmark indices. "left" is the person's anatomical left.
-ARMS = {
-    "left":  (11, 13, 15),   # shoulder, elbow, wrist
-    "right": (12, 14, 16),
-}
+# Which exercise the standalone CLI (python video.py) measures. The API passes an
+# Exercise straight into extract_series; only this script reads the env var. The
+# landmark triplets themselves now live in exercises.py, one table for all of them.
+EXERCISE = os.environ.get("EXERCISE", "bicep_curl")
 
 
 class VideoError(ValueError):
@@ -84,8 +86,12 @@ def _open(path: Path):
         rot = ROTATE_DEG % 360
 
     fps = cap.get(cv2.CAP_PROP_FPS)
-    if not fps or fps != fps:  # 0.0 or NaN
-        raise VideoError("Could not read a frame rate from this video.")
+    if not fps or fps != fps or fps > 240:  # 0.0, NaN, or absurd
+        # Browser MediaRecorder clips often omit the frame rate from the header,
+        # and some webm muxers report nonsense. The video is fine - assume a sane
+        # default rather than refusing it. A truly empty file still fails cleanly
+        # downstream at "No frames decoded", with a clearer message than this.
+        fps = 30.0
     return cap, rot, fps
 
 
@@ -96,7 +102,7 @@ _ROT = {
 }
 
 
-def extract_series(path, stride: int = STRIDE) -> tuple[List[Sample], dict]:
+def extract_series(path, exercise: Exercise, stride: int = STRIDE) -> tuple[List[Sample], dict]:
     path = Path(path)
     cap, rot, fps = _open(path)
 
@@ -137,7 +143,7 @@ def extract_series(path, stride: int = STRIDE) -> tuple[List[Sample], dict]:
             ts_ms = int(idx * 1000 / fps)
             result = landmarker.detect_for_video(image, ts_ms)
 
-            samples.append(_to_sample(result, idx, idx / fps, w, h))
+            samples.append(_to_sample(result, idx, idx / fps, w, h, exercise))
             idx += 1
 
     cap.release()
@@ -155,14 +161,17 @@ def extract_series(path, stride: int = STRIDE) -> tuple[List[Sample], dict]:
     return samples, meta
 
 
-def _to_sample(result, idx: int, t: float, w: int, h: int) -> Sample:
+def _to_sample(result, idx: int, t: float, w: int, h: int, exercise: Exercise) -> Sample:
     if not result.pose_landmarks:
         return Sample(idx, t, None, None, 0.0, 0.0)
     lms = result.pose_landmarks[0]
 
+    # (a, b, c) is the exercise's joint triplet for this side - b is the vertex the
+    # angle is measured at. For a curl that's shoulder-elbow-wrist; for a squat,
+    # hip-knee-ankle. Same three-dots-to-an-angle move either way.
     out = {}
-    for side, (s, e, wr) in ARMS.items():
-        vis = min(lms[s].visibility, lms[e].visibility, lms[wr].visibility)
+    for side, (a, b, c) in exercise.sides.items():
+        vis = min(lms[a].visibility, lms[b].visibility, lms[c].visibility)
         if vis < CONF_MIN:
             out[side] = (None, vis)
             continue
@@ -171,24 +180,24 @@ def _to_sample(result, idx: int, t: float, w: int, h: int) -> Sample:
         # squashed 1.78x on one axis and every angle in it is wrong. calc_angle
         # is scale-invariant; it is not aspect-ratio-invariant. Nothing errors -
         # you just get plausible garbage. Multiply back before you measure.
-        pts = [np.array([lms[i].x * w, lms[i].y * h]) for i in (s, e, wr)]
+        pts = [np.array([lms[i].x * w, lms[i].y * h]) for i in (a, b, c)]
         out[side] = (float(calc_angle(*pts)), vis)
 
     return Sample(idx, t, out["left"][0], out["right"][0], out["left"][1], out["right"][1])
 
 
-def pick_arm(samples: List[Sample]) -> tuple[str, dict]:
+def pick_side(samples: List[Sample]) -> tuple[str, dict]:
     """
     Decide once, with the whole video in hand - not per frame.
 
-    You shoot side-on, so one arm is occluded in every frame BY DESIGN. Choosing
-    per frame means a noisy frame flips you to the hidden arm mid-rep, your angle
-    series jumps 100 degrees, and the state machine counts a rep that never
-    happened. One decision, held for the whole video, cannot do that.
+    You shoot side-on, so one side (the far arm, the far leg) is occluded in every
+    frame BY DESIGN. Choosing per frame means a noisy frame flips you to the hidden
+    side mid-rep, your angle series jumps 100 degrees, and the state machine counts
+    a rep that never happened. One decision, held for the whole video, cannot do that.
     """
     scores = {
         side: float(np.mean([getattr(s, f"{side}_vis") for s in samples]))
-        for side in ARMS
+        for side in ("left", "right")
     }
     return max(scores, key=scores.__getitem__), scores
 
@@ -207,27 +216,27 @@ def median_smooth(values: List[Optional[float]], k: int = SMOOTH_K) -> List[Opti
     return out
 
 
-def _plot(samples, raw, smoothed, arm, meta, dest: Path):
+def _plot(samples, raw, smoothed, side, exercise: Exercise, meta, dest: Path):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from reps import UP_ENTER, DOWN_ENTER, FULL_ROM
 
+    up, down, full = exercise.up_enter, exercise.down_enter, exercise.full_rom
     nan = lambda xs: [np.nan if v is None else v for v in xs]
     t = [s.t for s in samples]
 
     fig, ax = plt.subplots(figsize=(12, 5))
-    ax.axhspan(UP_ENTER, DOWN_ENTER, color="grey", alpha=0.10)
-    ax.axhline(UP_ENTER, ls="--", lw=1, color="tab:blue", label=f"UP_ENTER {UP_ENTER:.0f}")
-    ax.axhline(DOWN_ENTER, ls="--", lw=1, color="tab:red", label=f"DOWN_ENTER {DOWN_ENTER:.0f}")
-    ax.axhline(FULL_ROM, ls=":", lw=1, color="tab:green", label=f"FULL_ROM {FULL_ROM:.0f}")
+    ax.axhspan(up, down, color="grey", alpha=0.10)
+    ax.axhline(up, ls="--", lw=1, color="tab:blue", label=f"up_enter {up:.0f}")
+    ax.axhline(down, ls="--", lw=1, color="tab:red", label=f"down_enter {down:.0f}")
+    ax.axhline(full, ls=":", lw=1, color="tab:green", label=f"full_rom {full:.0f}")
     ax.plot(t, nan(raw), lw=1, alpha=0.35, color="k", label="raw")
     ax.plot(t, nan(smoothed), lw=2, color="tab:orange", label=f"median({SMOOTH_K})")
 
     ax.set_xlabel("seconds")
-    ax.set_ylabel("elbow angle (deg)")
-    ax.set_title(f"{meta['file']}  |  {arm} arm  |  {meta['sample_hz']} Hz  |  rot {meta['rotation_applied']}")
-    ax.invert_yaxis()   # curl = up on the plot. Matches what your body did.
+    ax.set_ylabel(f"{exercise.vertex_name} angle (deg)")
+    ax.set_title(f"{meta['file']}  |  {exercise.name}  |  {side} {meta['sample_hz']} Hz  |  rot {meta['rotation_applied']}")
+    ax.invert_yaxis()   # flexion = up on the plot. Matches what your body did.
     ax.legend(loc="upper right", fontsize=8)
     ax.grid(alpha=0.25)
     fig.tight_layout()
@@ -236,17 +245,20 @@ def _plot(samples, raw, smoothed, arm, meta, dest: Path):
 
 
 def main(path: str):
-    samples, meta = extract_series(path)
-    arm, scores = pick_arm(samples)
-    meta["arm"] = arm
-    meta["arm_visibility"] = {k: round(v, 3) for k, v in scores.items()}
+    exercise = get_exercise(EXERCISE)
+    samples, meta = extract_series(path, exercise)
+    side, scores = pick_side(samples)
+    meta["exercise"] = exercise.name
+    meta["side"] = side
+    meta["side_visibility"] = {k: round(v, 3) for k, v in scores.items()}
 
-    raw = [getattr(s, arm) for s in samples]
+    raw = [getattr(s, side) for s in samples]
     smoothed = median_smooth(raw)
     seen = sum(v is not None for v in raw)
 
     print(json.dumps(meta, indent=2))
-    print(f"\narm visibility   : left {scores['left']:.2f}   right {scores['right']:.2f}   -> tracking {arm}")
+    print(f"\nexercise         : {exercise.name}  ({exercise.vertex_name} angle)")
+    print(f"side visibility  : left {scores['left']:.2f}   right {scores['right']:.2f}   -> tracking {side}")
     print(f"usable frames    : {seen}/{len(raw)}  ({seen / len(raw):.0%})")
     if seen:
         vals = [v for v in raw if v is not None]
@@ -262,7 +274,7 @@ def main(path: str):
         "raw": raw,
         "smoothed": smoothed,
     }, indent=2))
-    _plot(samples, raw, smoothed, arm, meta, out_dir / "angle_series.png")
+    _plot(samples, raw, smoothed, side, exercise, meta, out_dir / "angle_series.png")
 
 
 if __name__ == "__main__":

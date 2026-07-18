@@ -16,7 +16,7 @@ ten reps, your app says seven, and it has nothing to say about the other three.
 Detect permissively, grade strictly, and the feedback feature falls out for free.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
 
 # --- Detection thresholds: the hysteresis band ---------------------------
@@ -119,6 +119,10 @@ class RepGrade:
     duration_s: float        # enter-the-bend to back-to-straight, in seconds
     full: bool               # did it reach full range of motion?
     issues: List[str]        # human-readable complaints; empty == nothing wrong
+    depth_pct: float = 0.0   # how much of the target range it covered, 0-100
+    tags: List[str] = field(default_factory=list)   # short codes ("shallow", "rushed")
+                             # the same verdict as `issues`, but for colouring the
+                             # video overlay and table without re-parsing English
 
     @property
     def clean(self) -> bool:
@@ -128,40 +132,57 @@ class RepGrade:
 def form_feedback(
     reps: Sequence[Rep],
     times: Sequence[float],
-    full_rom: float = FULL_ROM,
-    tempo_min_s: float = TEMPO_MIN_S,
+    exercise: "Exercise",   # exercises.Exercise; string-annotated to keep this file dep-free
 ) -> List[RepGrade]:
     """
-    Turn detected reps into coaching.
+    Turn detected reps into coaching, in this exercise's own words.
 
     `times[i]` is the clock reading, in seconds, of the i-th angle sample - the
     SAME index find_reps walked, so a Rep's start/end indices drop straight into
     it. That shared index is the only wire between the two layers; all it carries
     is "which sample happened when."
 
-    Two rules, because side-on video can honestly see exactly two ways a curl
-    goes wrong:
-      - depth : did the arm reach the top?  (min_angle vs full_rom)
-      - tempo : lifted, or swung?           (duration vs tempo_min_s)
+    Two rules, because side-on video can honestly see exactly two ways a rep goes
+    wrong, and both generalise across the movements:
+      - depth : did the joint reach full range?  (min_angle vs full_rom)
+      - tempo : lifted, or thrown?               (duration vs tempo_min_s)
+
+    The messages are detailed on purpose: a bare "partial rep" gives the user
+    nothing to DO. Each names the number it missed and hands over the exercise's
+    own fix (`depth_cue` / `tempo_cue`). `tags` and `depth_pct` carry the same
+    verdict in a machine-readable form so the overlay and the table can colour and
+    size things without re-reading the English.
     """
+    full_rom = exercise.full_rom
+    down = exercise.down_enter
+    tempo_min_s = exercise.tempo_min_s
+    vtx = exercise.vertex_name
+    span = max(1.0, down - full_rom)   # the arc a "full" rep is expected to cover
+
     grades: List[RepGrade] = []
     for n, rep in enumerate(reps, start=1):
         duration = times[rep.end_idx] - times[rep.start_idx]
         is_full = rep.min_angle <= full_rom
-        issues: List[str] = []
+        # 100% once the joint reaches full_rom; linear back down to 0 at the top of
+        # the movement. Capped, so going deeper than full range still reads as 100.
+        depth_pct = max(0.0, min(100.0, (down - rep.min_angle) / span * 100.0))
 
+        issues: List[str] = []
+        tags: List[str] = []
         if not is_full:
             issues.append(
-                f"partial rep - curled only to {rep.min_angle:.0f}deg "
-                f"(a full rep passes {full_rom:.0f}deg)"
+                f"Shallow - {vtx} stopped at {rep.min_angle:.0f} deg, short of the "
+                f"{full_rom:.0f} deg that counts as full range. {exercise.depth_cue}"
             )
+            tags.append("shallow")
         if duration < tempo_min_s:
             issues.append(
-                f"too fast - {duration:.1f}s per rep "
-                f"(controlled is >={tempo_min_s:.1f}s; that's a swing)"
+                f"Rushed - {duration:.1f}s for the rep; controlled is >= "
+                f"{tempo_min_s:.1f}s. {exercise.tempo_cue}"
             )
+            tags.append("rushed")
 
-        grades.append(RepGrade(n, rep.min_angle, duration, is_full, issues))
+        grades.append(RepGrade(n, rep.min_angle, duration, is_full, issues, round(depth_pct), tags))
     return grades
 
 
@@ -235,23 +256,27 @@ def run_tests() -> bool:
     results.append(_check("all dropped -> 0", len(find_reps([None] * 20)), 0))
 
     # --- GRADING layer (form_feedback). Detection above, judgement here. ------
-    # Explicit tempo_min_s so these don't move when you calibrate the default.
+    # A concrete exercise supplies the thresholds now; clone the shipped curl with
+    # an explicit tempo so these tests don't move if that default is ever calibrated.
+    from dataclasses import replace
+    from exercises import BICEP_CURL
+    ex = replace(BICEP_CURL, tempo_min_s=1.0)
 
     # A deep rep at a controlled pace has nothing to say.
     clean_t = [i * 0.25 for i in range(9)]            # the rep spans ~1.25 s
-    g = form_feedback(find_reps(_clean_rep()), clean_t, tempo_min_s=1.0)
-    results.append(_check("clean rep -> full, no issues", (g[0].full, g[0].issues), (True, [])))
+    g = form_feedback(find_reps(_clean_rep()), clean_t, ex)
+    results.append(_check("clean rep -> full, no issues", (g[0].full, g[0].tags), (True, [])))
 
-    # A 92-degree rep IS a rep (detection is permissive) but grades partial.
+    # A 92-degree rep IS a rep (detection is permissive) but grades shallow.
     partial_t = [i * 0.7 for i in range(5)]
-    g = form_feedback(find_reps([170.0, 130.0, 92.0, 130.0, 170.0]), partial_t, tempo_min_s=1.0)
+    g = form_feedback(find_reps([170.0, 130.0, 92.0, 130.0, 170.0]), partial_t, ex)
     results.append(_check("92-degree rep -> not full", g[0].full, False))
-    results.append(_check("92-degree rep -> says partial", any("partial" in s for s in g[0].issues), True))
+    results.append(_check("92-degree rep -> tagged shallow", "shallow" in g[0].tags, True))
 
     # The same deep rep, crammed into 0.4 s, is a swing.
     fast_t = [i * 0.05 for i in range(9)]
-    g = form_feedback(find_reps(_clean_rep()), fast_t, tempo_min_s=1.0)
-    results.append(_check("rushed rep -> says too fast", any("too fast" in s for s in g[0].issues), True))
+    g = form_feedback(find_reps(_clean_rep()), fast_t, ex)
+    results.append(_check("rushed rep -> tagged rushed", "rushed" in g[0].tags, True))
 
     return all(results)
 

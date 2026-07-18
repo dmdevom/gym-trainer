@@ -1,16 +1,19 @@
+import asyncio
 from contextlib import asynccontextmanager
 import logging
 import os
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from analyzer import CONF_MIN, analyze
 from backends import get_backend
+from exercises import EXERCISES
 from render import annotate_video
 from video import VideoError
 
@@ -28,6 +31,25 @@ TEMPLATES = Path(__file__).parent / "templates"
 # guardrail). On a restart they're gone, which for an upload->analyse->watch tool
 # is exactly right.
 RESULTS_DIR = Path(tempfile.mkdtemp(prefix="gymtrainer-"))
+
+# In-memory job table. The upload returns a token the instant the file lands, and
+# the page polls /progress while the analysis runs in the background and reports
+# here. A dict, not a database, for the same reason RESULTS_DIR is a temp dir: the
+# result is disposable and there are no accounts. Pruned so a long-lived process on
+# Spaces doesn't slowly leak jobs and their rendered webms.
+JOBS: dict = {}
+
+
+def _prune_jobs(max_age_s: float = 3600, max_jobs: int = 128) -> None:
+    now = time.time()
+    for tok in list(JOBS):
+        if now - JOBS[tok].get("created", now) > max_age_s:
+            JOBS.pop(tok, None)
+            (RESULTS_DIR / f"{tok}.webm").unlink(missing_ok=True)
+    if len(JOBS) > max_jobs:                     # hard cap, oldest first
+        for tok in sorted(JOBS, key=lambda t: JOBS[t].get("created", 0))[: len(JOBS) - max_jobs]:
+            JOBS.pop(tok, None)
+            (RESULTS_DIR / f"{tok}.webm").unlink(missing_ok=True)
 
 
 @asynccontextmanager
@@ -66,6 +88,13 @@ def health():
     return {"status": "ok", "conf_min": CONF_MIN, **get_backend().info()}
 
 
+@app.get("/exercises")
+def exercises():
+    # Served to the page's selector so the client's list of movements can't drift
+    # from the server's. Thresholds stay here; the client only gets names and tips.
+    return {"exercises": [e.brief() for e in EXERCISES.values()]}
+
+
 @app.post("/analyze/photo")
 async def analyze_photo(file: UploadFile = File(...)):
     if not (file.content_type or "").startswith("image/"):
@@ -94,8 +123,39 @@ async def analyze_photo(file: UploadFile = File(...)):
     return result
 
 
+async def _run_job(token: str, src: str, dst: str, exercise_key: str) -> None:
+    """Do the slow work off to the side and report progress into JOBS[token].
+
+    The endpoint handed back a token the moment the upload landed; the page polls
+    /progress while this runs. annotate_video is sync and CPU-bound (seconds of
+    MediaPipe + encoding), so it goes to the threadpool - and its progress callback
+    is invoked FROM that worker thread, writing a couple of ints into the job dict,
+    which is safe enough under the GIL for a status line."""
+    def progress_cb(stage: str, pct) -> None:
+        job = JOBS.get(token)
+        if job is not None and not job["done"]:
+            job["stage"] = stage
+            job["pct"] = pct
+
+    try:
+        summary = await run_in_threadpool(annotate_video, src, dst, exercise_key, progress_cb)
+        summary.pop("video", None)               # a local path; the browser gets a URL
+        summary["video_url"] = f"/results/{token}"
+        JOBS[token].update(stage="Done", pct=100, done=True, result=summary)
+    except VideoError as e:
+        JOBS[token].update(stage="Error", done=True, error=str(e))
+    except Exception:
+        log.exception("analysis failed for token %s", token)
+        JOBS[token].update(stage="Error", done=True, error="Analysis failed on this clip. Try another.")
+    finally:
+        Path(src).unlink(missing_ok=True)        # keep only the rendered .webm
+
+
 @app.post("/analyze/video")
-async def analyze_video_endpoint(file: UploadFile = File(...)):
+async def analyze_video_endpoint(
+    file: UploadFile = File(...),
+    exercise: str = Form("bicep_curl"),
+):
     # Phones love to send video as application/octet-stream, so accept on either
     # the content-type OR a known extension rather than rejecting a real clip.
     name = (file.filename or "").lower()
@@ -116,24 +176,41 @@ async def analyze_video_endpoint(file: UploadFile = File(...)):
         )
 
     token = uuid.uuid4().hex
-    src = RESULTS_DIR / f"{token}{Path(name).suffix or '.mp4'}"
+    # src must NOT collide with dst. A recorded clip arrives as .webm, and dst is
+    # ALWAYS .webm — so `{token}.webm` for both is the same file, and the writer
+    # truncates the upload before the dense pass can re-read it ("Could not open
+    # this video"). The "-src" suffix keeps them apart. (An uploaded .mp4 never
+    # collided, which is exactly why only the Record path hit this.)
+    src = RESULTS_DIR / f"{token}-src{Path(name).suffix or '.mp4'}"
     dst = RESULTS_DIR / f"{token}.webm"
     src.write_bytes(data)
 
-    # annotate_video is sync and CPU-bound (seconds of MediaPipe + encoding). Run
-    # it off the event loop or a single upload freezes every other request. Each
-    # call builds its own landmarker, so the threadpool is safe here.
-    try:
-        summary = await run_in_threadpool(annotate_video, str(src), str(dst))
-    except VideoError as e:
-        return JSONResponse(status_code=422, content={"error": "bad_video", "detail": str(e)})
-    finally:
-        src.unlink(missing_ok=True)  # keep only the rendered .webm, not the upload
+    # Register the job, then return the token straight away (202). The work runs in
+    # the background so the page can show a real progress bar instead of a spinner
+    # that says nothing for 20 seconds. get_exercise (inside annotate_video) defaults
+    # a bad key rather than erroring, so no validation is needed here.
+    JOBS[token] = {"stage": "Starting", "pct": 0, "done": False, "error": None,
+                   "result": None, "created": time.time()}
+    _prune_jobs()
+    asyncio.create_task(_run_job(token, str(src), str(dst), exercise))
+    return JSONResponse(status_code=202, content={"token": token})
 
-    # The renderer returns a local path; the browser gets a URL instead.
-    summary.pop("video", None)
-    summary["video_url"] = f"/results/{token}"
-    return summary
+
+@app.get("/progress/{token}")
+def progress(token: str):
+    # token is our uuid4 hex; isalnum() rejects any '../' path-traversal attempt.
+    if not token.isalnum():
+        return JSONResponse(status_code=400, content={"error": "bad_token"})
+    job = JOBS.get(token)
+    if job is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "not_found", "detail": "This job expired - analyse again."},
+        )
+    out = {"stage": job["stage"], "pct": job["pct"], "done": job["done"], "error": job["error"]}
+    if job["done"] and job["result"] is not None:
+        out["result"] = job["result"]           # the full summary + video_url, once
+    return out
 
 
 @app.get("/results/{token}")
