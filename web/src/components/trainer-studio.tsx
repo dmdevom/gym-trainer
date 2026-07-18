@@ -4,6 +4,7 @@ import {
   Activity, ArrowRight, Camera, Check, ChevronRight, CircleAlert, Dumbbell,
   FileVideo, Gauge, LoaderCircle, Play, RotateCcw, Sparkles, Upload, Video,
 } from "lucide-react";
+import Image from "next/image";
 import { ChangeEvent, DragEvent, useCallback, useEffect, useRef, useState } from "react";
 import { fetchExercises, fetchProgress, submitVideo, validateVideo } from "@/lib/api";
 import { DEMO_SAMPLES, samplesForExercise } from "@/lib/samples";
@@ -49,7 +50,9 @@ export function TrainerStudio() {
   useEffect(() => {
     const controller = new AbortController();
     fetchExercises(controller.signal).then((items) => {
-      if (items.length) setExercises(items);
+      if (items.length) setExercises(items.map((exercise) =>
+        exercise.key === "bicep_curl" ? { ...exercise, name: "Bicep Curl" } : exercise
+      ));
     }).catch(() => undefined);
     return () => controller.abort();
   }, []);
@@ -226,7 +229,7 @@ export function TrainerStudio() {
         </div>
         <div className="hero-visual" aria-hidden="true">
           <div className="orbit orbit-one" /><div className="orbit orbit-two" />
-          <div className="hero-panel"><video className="hero-photo" src="/samples/bicep-curl-pass.mp4" autoPlay muted loop playsInline preload="metadata" /><div className="hero-metric"><small>ELBOW ANGLE</small><strong>63°</strong><span>Full ROM</span></div></div>
+          <div className="hero-panel"><Image className="hero-photo" src="/hero-dumbbell-curl.jpg" alt="" fill sizes="(max-width: 700px) 330px, 390px" priority /><div className="hero-metric"><small>ELBOW ANGLE</small><strong>63°</strong><span>Full ROM</span></div></div>
           <div className="floating-score"><BadgeIcon /><div><strong>4/5</strong><small>clean reps</small></div></div>
         </div>
       </section>

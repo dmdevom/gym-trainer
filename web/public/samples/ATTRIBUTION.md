@@ -4,23 +4,31 @@ The demo clips are excerpted, muted, resized, and recompressed for trAIner. Thei
 timing is unchanged: no sample is sped up or slowed down. No source creator or
 depicted person endorses trAIner.
 
-## Single-arm bicep curl
+## Homepage hero
 
-`bicep-curl-pass.mp4` is a normal-speed excerpt from “Dumbbell Bicep Curls”
-by FITTR. It is also used as the looping workout footage in the homepage hero.
+`hero-dumbbell-curl.jpg` is derived from “Dumbells training man” by Marius Muresan.
 
-- Source: https://www.youtube.com/watch?v=2k9co4UIlEw
-- Creator: FITTR
-- Changes: excerpted, muted, resized, and recompressed; playback timing unchanged.
+- Source: https://unsplash.com/photos/OjWAKQp074A
+- License: Unsplash License
+- License URL: https://unsplash.com/license
+- Changes: cropped, resized, and recompressed for the portrait hero card.
 
-`bicep-curl-fail.mp4` is a real-time excerpt from the 2015 “Gimme Five”
-challenge video by David Lienemann and the Executive Office of the President.
-The working arm stays visible and the source contains naturally rushed curls.
+## Bicep curl
 
-- Source: https://commons.wikimedia.org/wiki/File:Joe_Biden_video_for_Gimme_Five_challenge_2015.ogv
-- License: Public domain (work of the United States federal government)
-- Changes: muted and transcoded to browser-compatible H.264 MP4; playback
-  timing unchanged.
+`bicep-curl-pass.mp4` is derived from the user-provided CapCut export
+`0718(1).mov`. The live analyzer verified 2/2 full, controlled reps.
+
+- Source: user-provided footage
+- Changes: muted, resized, padded to 16:9 with black side bars, and transcoded
+  to H.264 MP4; playback timing unchanged.
+
+`bicep-curl-fail.mp4` is derived from the user-provided CapCut export
+`0718.mov`. The live analyzer found no complete reps because the arm does not
+return to full extension.
+
+- Source: user-provided footage
+- Changes: muted, resized, padded to 16:9 with black side bars, and transcoded
+  to H.264 MP4; playback timing unchanged.
 
 ## Barbell curl
 
@@ -43,9 +51,8 @@ FitnessScape.
 - License URL: https://creativecommons.org/licenses/by/3.0/
 - Changes: muted, resized, and recompressed; playback timing unchanged.
 
-`squat-fail.mp4` is a real-time half-squat excerpt from “Muscle Strengthening
-at Home - Half squat” by the U.S. Centers for Disease Control and Prevention.
+`squat-fail.mp4` is a normal-speed excerpt from the real gym set “Squats - not
+getting low enough?” posted by Reddit user u/blazesboylan91.
 
-- Source: https://commons.wikimedia.org/wiki/File:Muscle_Strengthening_at_Home_-_Half_squat.webm
-- License: Public domain (work of the United States federal government)
+- Source: https://www.reddit.com/r/strength_training/comments/1rvfy42/squats_not_getting_low_enough/
 - Changes: excerpted, muted, resized, and recompressed; playback timing unchanged.

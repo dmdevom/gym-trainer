@@ -36,7 +36,7 @@ a { color: inherit; text-decoration: none; }
 .hero-copy { position: relative; z-index: 2; max-width: 650px; }
 .eyebrow { display: inline-flex; align-items: center; gap: 7px; color: var(--lime); font-size: 11px; line-height: 1; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; }
 .hero h1 { margin: 24px 0 23px; font-size: clamp(58px, 6.4vw, 94px); line-height: .91; letter-spacing: -.065em; font-weight: 800; }
-.hero h1 em { color: #111619; -webkit-text-stroke: 1.25px #7b8389; paint-order: stroke fill; font-style: normal; letter-spacing: -.045em; }
+.hero h1 em { color: #8f989f; background: linear-gradient(100deg, #c0c7cc 0%, #8d979e 55%, #69737a 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; font-style: normal; letter-spacing: -.045em; }
 .hero-copy > p { max-width: 570px; margin: 0; color: #aab2b9; font-size: 17px; line-height: 1.7; }
 .primary-button, .secondary-button { border: 0; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; font-weight: 800; cursor: pointer; transition: transform .2s, background .2s, border-color .2s; }
 .primary-button { color: #101303; background: var(--lime); padding: 14px 18px; box-shadow: 0 10px 35px rgba(217,255,67,.1); }
