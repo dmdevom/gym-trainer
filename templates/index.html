@@ -76,6 +76,10 @@
   .focusLabel { color:var(--dim); font-size:12.5px; text-transform:uppercase;
                 letter-spacing:.05em; margin-right:8px; }
   #focus { color:var(--ok); font-weight:700; }
+  .cue { margin:0 0 16px; font-size:15px; }
+  #mentalCue { color:var(--arm); font-weight:700; font-style:italic; }
+  .story { color:var(--ink); font-size:14.5px; line-height:1.55; margin:2px 0 16px;
+           padding:2px 0 2px 12px; border-left:3px solid var(--arm); }
   .clist { margin:0 0 14px; padding-left:20px; }
   .clist li { margin:6px 0; }
   .muscle { color:var(--dim); font-size:13.5px; border-top:1px solid var(--line);
@@ -90,6 +94,9 @@
   .chip.ok { color:var(--ok); background:rgba(90,210,90,.12); }
   .chip.warn { color:var(--warn); background:rgba(255,200,87,.14); }
   .chip.bad { color:var(--bad); background:rgba(255,91,110,.12); }
+  .chip.dim { color:var(--dim); background:rgba(154,164,178,.12); }
+  /* the "what we checked" row: a chip per whole-body form check */
+  .checks { display:flex; gap:8px; flex-wrap:wrap; margin:2px 0 6px; }
   .issues { color:var(--dim); font-size:13.5px; }
   h2 { font-size:15px; color:var(--dim); text-transform:uppercase;
        letter-spacing:.06em; margin:26px 0 10px; }
@@ -151,7 +158,9 @@
 
     <div class="card" id="coachCard">
       <h2>Improve &amp; next session</h2>
+      <p class="story" id="sessionStory" hidden></p>
       <p class="focus"><span class="focusLabel">Focus next</span><span id="focus"></span></p>
+      <p class="cue" id="cueRow" hidden><span class="focusLabel">Cue</span><span id="mentalCue"></span></p>
       <ul id="nextSession" class="clist"></ul>
       <h3>Keep in mind</h3>
       <ul id="keepInMind" class="clist"></ul>
@@ -164,6 +173,9 @@
         <thead><tr><th>#</th><th>Deepest</th><th>Depth</th><th>Tempo</th><th>Notes</th></tr></thead>
         <tbody id="reps"></tbody>
       </table>
+
+      <h2 id="formTitle" style="display:none">What we checked</h2>
+      <div id="formChecks" class="checks"></div>
 
       <h2 id="chartTitle">Angle over time</h2>
       <canvas id="chart" height="180"></canvas>
@@ -413,7 +425,16 @@ function render(d) {
 
   // coaching
   const c = d.coaching || {};
+  // session_story is the LLM's narrative read of the set - present only when the
+  // LLM path wrote the coaching; the rule-based fallback omits it, so hide the block.
+  const story = $("sessionStory");
+  story.textContent = c.session_story || "";
+  story.hidden = !c.session_story;
   $("focus").textContent = c.focus || "";
+  // mental_cue: one physical cue to hold next set. Both the LLM and rule-based paths
+  // write it, so show the row whenever it's non-empty (the no-reps card leaves it blank).
+  $("mentalCue").textContent = c.mental_cue || "";
+  $("cueRow").hidden = !c.mental_cue;
   fillList("nextSession", c.next_session);
   fillList("keepInMind", c.keep_in_mind);
   $("muscle").textContent = c.muscle || "";
@@ -443,6 +464,27 @@ function render(d) {
       `<td>${tempoCell}</td>` +
       `<td class="issues">${notes}</td>`;
     tb.appendChild(tr);
+  }
+
+  // "what we checked" — one chip per whole-body form check: green if clean, red with
+  // a count if it flagged reps, dim "not in frame" when the limb was cropped out.
+  const fc = d.form_checks || [];
+  const fbox = $("formChecks");
+  fbox.innerHTML = "";
+  $("formTitle").style.display = fc.length ? "" : "none";
+  for (const f of fc) {
+    const chip = document.createElement("span");
+    if (f.status === "flag") {
+      chip.className = "chip bad";
+      chip.textContent = `${f.label} · ${f.flagged}/${f.assessed}`;
+    } else if (f.status === "not_assessed") {
+      chip.className = "chip dim";
+      chip.textContent = `${f.label} · not in frame`;
+    } else {
+      chip.className = "chip ok";
+      chip.textContent = `${f.label} ✓`;
+    }
+    fbox.appendChild(chip);
   }
 
   $("chartTitle").textContent = `${cap(vtx)} angle over time`;

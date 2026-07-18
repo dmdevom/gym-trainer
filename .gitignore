@@ -6,6 +6,12 @@ __pycache__/
 .venv/
 venv/
 
+# ---- Local secrets (never commit real keys) ----
+# .env holds OPENROUTER_API_KEY etc. for local dev and is auto-loaded on start;
+# the committable template is .env.example.
+.env
+.env.local
+
 # ---- Run / debug artifacts ----
 out/
 probe_out/

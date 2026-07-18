@@ -69,6 +69,12 @@ class Exercise:
     # Primary movers + a one-line growth note, for the coaching card.
     muscle: str
 
+    # Secondary form checks: the whole-body rules graded WITHIN each detected rep,
+    # beside the one primary angle find_reps counts on. Data, not code (see
+    # FormCheck). Empty is fine and is the default - an exercise with no checks grades
+    # exactly on depth + tempo, the way everything did before this table existed.
+    checks: Tuple["FormCheck", ...] = ()
+
     def brief(self) -> dict:
         """The public description the /exercises endpoint serves and the page's
         selector renders. Thresholds stay server-side; the client only needs to
@@ -80,6 +86,105 @@ class Exercise:
             "film_tip": self.film_tip,
             "tips": list(self.tips),
         }
+
+
+# =========================================================================
+# FORM CHECKS - the "look at the whole body, not just the one angle" layer.
+#
+# find_reps stays exactly what it was: a state machine on ONE clean angle per
+# exercise (elbow, knee). It is not asked to understand posture. Everything else a
+# side-on camera can honestly see - a squat folding forward, a curl's elbow
+# drifting, the torso swinging to cheat the weight up - is a FormCheck, graded
+# WITHIN each rep the primary angle already found. Same bet as the rest of this
+# file: a check is a row of numbers and two strings, not a new code path.
+#
+# A check reduces a rep's frames to one number and compares it to a limit:
+#   measure  how a single frame becomes a scalar -
+#              "angle"    -> calc_angle over 3 landmarks (a joint angle)
+#              "vertical" -> a 2-landmark segment's tilt off vertical, 0..90 deg
+#   reduce   how the per-frame scalars collapse to one -
+#              "at_bottom"-> the value at the rep's deepest frame
+#              "max"/"min"-> the worst / smallest across the rep
+#              "range"    -> max - min across the rep (swing, drift)
+#   compare  "over" flags when the reduced value exceeds limit, "under" when below
+#
+# Out of frame is not a fault: if too few of a rep's frames saw all the check's
+# landmarks it is reported "not assessed", never penalised (see reps.evaluate_checks).
+# =========================================================================
+
+@dataclass(frozen=True)
+class FormCheck:
+    key: str                       # short id, and the tag that colours the overlay/table
+    label: str                     # positive name for the "what we checked" row ("Elbow pinned")
+    fault: str                     # what to say when it's violated ("Elbow drifting forward")
+    measure: str                   # "angle" (3 landmarks) | "vertical" (2 landmarks)
+    sides: Dict[str, Tuple[int, ...]]   # the landmark indices per side (3 for angle, 2 for vertical)
+    reduce: str                    # "at_bottom" | "max" | "min" | "range"
+    compare: str                   # "over" | "under" - which side of `limit` is the fault
+    limit: float                   # the threshold, in degrees
+    cue: str                       # the actionable fix, appended to the flagged issue line
+    min_vis: float = 0.5           # a landmark below this visibility doesn't count as seen (CONF_MIN)
+
+
+# --- the curl checks (shared by both curls; barbell tightens the swing below) ---
+
+# A strict curl keeps the upper arm hanging ~vertical - only the forearm swings up.
+# Let the elbow drift forward to help and the shoulder->elbow segment tilts away
+# from vertical, so the WORST tilt across the rep is the tell. Read off the curl
+# clips: a clean rep stays well under this; loosen it if your top-of-curl trips it.
+_ELBOW_PINNED = FormCheck(
+    key="elbow", label="Elbow pinned", fault="Elbow drifting forward",
+    measure="vertical", sides={"left": (11, 13), "right": (12, 14)},
+    reduce="max", compare="over", limit=40.0,
+    cue="Pin your elbow to your side - let only the forearm move.",
+)
+
+# Body english: rocking the torso (shoulder->hip) back and forth to throw the
+# weight up. A clean rep barely moves it, so the RANGE of torso tilt over the rep -
+# not its absolute lean - is what flags the cheat.
+_TORSO_STILL = FormCheck(
+    key="swing", label="No body swing", fault="Swinging the torso",
+    measure="vertical", sides={"left": (11, 23), "right": (12, 24)},
+    reduce="range", compare="over", limit=12.0,
+    cue="Keep your torso still - no leaning back to heave the weight up.",
+)
+
+# Barbell curls are stricter about this - the tips already say "if your hips move,
+# the weight's too heavy" - so the same check, tighter.
+_TORSO_STILL_STRICT = FormCheck(
+    key="swing", label="No body swing", fault="Swinging the torso",
+    measure="vertical", sides={"left": (11, 23), "right": (12, 24)},
+    reduce="range", compare="over", limit=9.0,
+    cue="Strict reps only - if your torso swings, the bar is too heavy.",
+)
+
+# Standing curl: the legs should stay planted and straight. Dip and drive with the
+# knees to help and the hip-knee-ankle angle drops, so its SMALLEST value across the
+# rep is the tell. Needs the legs in frame - the #1 cropped-out case, which degrades
+# to "not assessed", not a wrong grade.
+_LEGS_GROUNDED = FormCheck(
+    key="legs", label="Legs grounded", fault="Legs bending to help",
+    measure="angle", sides={"left": (23, 25, 27), "right": (24, 26, 28)},
+    reduce="min", compare="under", limit=150.0,
+    cue="Stand tall and still - drive with your arms, not your legs.",
+)
+
+# --- the squat check ---
+
+# The upper-body check a knee-only squat grade misses entirely: at the bottom, is
+# the lifter still "chest up", or folded forward over the bar? We measure the torso
+# (shoulder->hip) tilt off vertical AT THE DEEPEST frame. A squat leans forward by
+# nature, so the bar is set high on purpose - this flags a genuine fold, not a normal
+# hip hinge. MediaPipe has no spine points, so this is torso *lean*, never back
+# *rounding* - the cue says "chest up," it never claims to see your spine.
+# UNCALIBRATED: there's no squat footage yet - read this number off a real plot
+# before trusting it (the standing rule for every threshold in this file).
+_SQUAT_TORSO = FormCheck(
+    key="lean", label="Chest up", fault="Folding forward at the bottom",
+    measure="vertical", sides={"left": (11, 23), "right": (12, 24)},
+    reduce="at_bottom", compare="over", limit=60.0,
+    cue="Keep your chest up and sit between your hips instead of folding over.",
+)
 
 
 # =========================================================================
@@ -109,6 +214,7 @@ BICEP_CURL = Exercise(
     tempo_cue="Slow it down - control the lowering instead of dropping the weight.",
     muscle="Biceps brachii. It grows from full-range reps under control - the stretch "
            "at the bottom matters as much as the squeeze at the top.",
+    checks=(_ELBOW_PINNED, _TORSO_STILL, _LEGS_GROUNDED),
 )
 
 BARBELL_CURL = Exercise(
@@ -134,6 +240,7 @@ BARBELL_CURL = Exercise(
     tempo_cue="Control the negative - a 2-3s lower beats dropping the bar.",
     muscle="Biceps brachii, both arms at once. Strict reps with no body english keep "
            "the tension on the muscle instead of the momentum.",
+    checks=(_ELBOW_PINNED, _TORSO_STILL_STRICT, _LEGS_GROUNDED),
 )
 
 SQUAT = Exercise(
@@ -160,6 +267,7 @@ SQUAT = Exercise(
     tempo_cue="Control the descent - own the bottom instead of bouncing out of it.",
     muscle="Quads, glutes and hamstrings. Depth is what pays: hitting parallel or "
            "below trains the glutes and hams a half-squat skips.",
+    checks=(_SQUAT_TORSO,),
 )
 
 EXERCISES: Dict[str, Exercise] = {e.key: e for e in (BICEP_CURL, BARBELL_CURL, SQUAT)}

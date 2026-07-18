@@ -122,25 +122,15 @@ def _thick(k: float, base: float) -> int:
     return max(1, round(base * k))
 
 
-def _landmarks_px(result, w: int, h: int) -> Landmarks:
-    """All 33 landmarks as {index: (x_px, y_px, visibility)} in output space, or
-    None when no pose was found. Same normalized->pixel multiply the angle depends
-    on - forget it and the skeleton draws itself onto the top-left corner."""
-    if not result.pose_landmarks:
-        return None
-    lms = result.pose_landmarks[0]
-    return {i: (lm.x * w, lm.y * h, lm.visibility or 0.0) for i, lm in enumerate(lms)}
-
-
 # --- detection pass: sparse, and the single source of the count -----------
 
 def _detect_pass(path: str, exercise: Exercise, progress_cb=None):
     """
-    Sample at STRIDE, exactly like analyze.py's signal, but keep the landmark
-    pixels too - analyze.py throws them away and the overlay can't. Returns the
-    samples (for counting), the aligned landmark maps (for drawing), the meta, the
-    fps/rotation, the output frame size the writer must match, and the total frame
-    count (for the progress bar).
+    Sample at STRIDE, exactly like analyze.py's signal. Each Sample now carries its
+    full landmark map (video._to_sample builds it in THIS output space), so the same
+    objects both count the reps AND draw the skeleton - no parallel landmark list to
+    keep in lockstep. Returns the samples, the meta, the fps/rotation, the output
+    frame size the writer must match, and the total frame count (for the progress bar).
     """
     cap, rot, fps = _open(Path(path))
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
@@ -156,7 +146,6 @@ def _detect_pass(path: str, exercise: Exercise, progress_cb=None):
     )
 
     samples: List[Sample] = []
-    lms_px: List[Landmarks] = []
     out_w = out_h = 0
     idx = 0
     with mp_vision.PoseLandmarker.create_from_options(options) as landmarker:
@@ -177,7 +166,6 @@ def _detect_pass(path: str, exercise: Exercise, progress_cb=None):
             result = landmarker.detect_for_video(image, int(idx * 1000 / fps))
 
             samples.append(_to_sample(result, idx, idx / fps, out_w, out_h, exercise))
-            lms_px.append(_landmarks_px(result, out_w, out_h))
             idx += 1
 
             # Detection is the first ~40% of the wait. Report it throttled - the
@@ -197,7 +185,7 @@ def _detect_pass(path: str, exercise: Exercise, progress_cb=None):
         "sample_hz": round(fps / STRIDE, 2),
         "frames_sampled": len(samples),
     }
-    return samples, lms_px, meta, fps, rot, (out_w, out_h), total
+    return samples, meta, fps, rot, (out_w, out_h), total
 
 
 # --- interpolation: sparse samples, smooth picture ------------------------
@@ -412,6 +400,9 @@ def _tally(per_rep: List[dict], t: float) -> dict:
         "full": sum(1 for r in done if r["full"]),
         "shallow": sum(1 for r in done if "shallow" in r["tags"]),
         "rushed": sum(1 for r in done if "rushed" in r["tags"]),
+        # One count for every posture/form fault, whatever its tag - the overlay
+        # names the specific one in the flash; the tally just keeps a running total.
+        "form": sum(1 for r in done if any(tg not in ("shallow", "rushed") for tg in r["tags"])),
     }
 
 
@@ -454,6 +445,8 @@ def _draw_hud(img, exercise: Exercise, reps_done: int, total: int, tally: dict,
         txt = f"{angle:.0f} {exercise.vertex_name}"
         _shadow_text(img, txt, (w - _text_w(txt, 0.8 * k, k) - int(14 * k), r1), 0.8 * k, _zone_color(angle, thr), k)
     tally_txt = f"{tally['full']} full  {tally['shallow']} short  {tally['rushed']} fast"
+    if tally["form"]:
+        tally_txt += f"  {tally['form']} form"
     _shadow_text(img, tally_txt, (w - _text_w(tally_txt, 0.5 * k, k, 1) - int(14 * k), r2), 0.5 * k, C_DIM, k, 1)
 
     _draw_rom_gauge(img, angle, thr, k)
@@ -488,14 +481,23 @@ def _draw_end_card(base: np.ndarray, summary: dict, exercise: Exercise, k: float
         _center(img, "full reps", cx, y, 0.7 * k, C_TEXT, k)
         y += int(46 * k)
         t = _tally(summary["per_rep"], 1e18)
-        _center(img, f"{t['full']} full    {t['shallow']} shallow    {t['rushed']} rushed", cx, y, 0.6 * k, C_DIM, k, 1)
+        line = f"{t['full']} full    {t['shallow']} shallow    {t['rushed']} rushed"
+        if t["form"]:
+            line += f"    {t['form']} form"
+        _center(img, line, cx, y, 0.6 * k, C_DIM, k, 1)
         y += int(54 * k)
 
     c = summary["coaching"]
     _center(img, "FOCUS NEXT", cx, y, 0.55 * k, C_DIM, k, 1)
     y += int(34 * k)
     _center(img, c["focus"], cx, y, 0.9 * k, C_GREEN, k)
-    y += int(46 * k)
+    y += int(44 * k)
+    # One short cue to hold in mind, in quotes so it reads as a coach's aside. Present
+    # on both the LLM and rules paths; skipped if empty (e.g. the no-reps card).
+    cue = c.get("mental_cue")
+    if cue:
+        _center(img, f'"{cue}"', cx, y, 0.62 * k, C_YELLOW, k, 1)
+        y += int(36 * k)
     if c["next_session"]:
         for ln in _wrap(c["next_session"][0], 0.55 * k, k, int(w * 0.82), max_lines=3):
             _center(img, ln, cx, y, 0.55 * k, C_TEXT, k, 1)
@@ -522,12 +524,20 @@ def annotate_video(src, dst=None, exercise_key: str = "bicep_curl", progress_cb=
     """
     src = str(src)
     exercise = get_exercise(exercise_key)
-    samples, lms_px, meta, fps, rot, size, total = _detect_pass(src, exercise, progress_cb)
+    samples, meta, fps, rot, size, total = _detect_pass(src, exercise, progress_cb)
 
     side, scores = pick_side(samples)
     raw = [getattr(s, side) for s in samples]
     times = [s.t for s in samples]
-    summary = summarize(meta, exercise, side, scores, raw, times)
+
+    # summarize() may call the LLM for coaching (llm_coach). That's a few seconds in
+    # the request path, so name the stage - otherwise the bar sits silent at the end
+    # of detection. Harmless when the LLM is off: summarize returns near-instantly.
+    # It also grades the form checks, so hand it the samples (every landmark), not
+    # just the primary angle series.
+    if progress_cb:
+        progress_cb("Coaching", 41)
+    summary = summarize(meta, exercise, side, scores, raw, times, samples)
 
     angle = summary["series"]["angle"]                 # smoothed, aligned to samples
     per_rep = summary["per_rep"]
@@ -554,7 +564,8 @@ def annotate_video(src, dst=None, exercise_key: str = "bicep_curl", progress_cb=
 
             j = min(idx // STRIDE, len(samples) - 1)     # the sample at or before this frame
             f = (idx % STRIDE) / STRIDE                  # ...and how far toward the next
-            lm = _lerp_landmarks(lms_px[j], lms_px[j + 1] if j + 1 < len(lms_px) else None, f)
+            lm = _lerp_landmarks(samples[j].landmarks,
+                                 samples[j + 1].landmarks if j + 1 < len(samples) else None, f)
             live = _lerp_angle(angle, j, f)
 
             _draw_skeleton(frame, lm, exercise, side, k)

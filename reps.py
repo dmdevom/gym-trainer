@@ -16,8 +16,11 @@ ten reps, your app says seven, and it has nothing to say about the other three.
 Detect permissively, grade strictly, and the feedback feature falls out for free.
 """
 
+import math
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence
+
+from analyzer import calc_angle  # Phase 1's trig, reused for the secondary form angles too.
 
 # --- Detection thresholds: the hysteresis band ---------------------------
 # The gap between these two is the dead zone. Noise that rattles around inside
@@ -133,6 +136,7 @@ def form_feedback(
     reps: Sequence[Rep],
     times: Sequence[float],
     exercise: "Exercise",   # exercises.Exercise; string-annotated to keep this file dep-free
+    checks_per_rep: Optional[Sequence[Sequence["CheckResult"]]] = None,
 ) -> List[RepGrade]:
     """
     Turn detected reps into coaching, in this exercise's own words.
@@ -142,16 +146,22 @@ def form_feedback(
     it. That shared index is the only wire between the two layers; all it carries
     is "which sample happened when."
 
-    Two rules, because side-on video can honestly see exactly two ways a rep goes
-    wrong, and both generalise across the movements:
+    The always-on rules are the two a side-on camera can read from the ONE primary
+    angle, and both generalise across the movements:
       - depth : did the joint reach full range?  (min_angle vs full_rom)
       - tempo : lifted, or thrown?               (duration vs tempo_min_s)
 
+    `checks_per_rep`, when supplied, is evaluate_checks()'s whole-body verdict for
+    each rep in the same order - torso lean, elbow drift, and so on. Its flagged
+    issues lead the list, because posture/safety outranks depth and tempo in what to
+    fix next, and because the on-video flash shows issues[0]. Leave it None (the
+    default) and this behaves exactly as it did before form checks existed - which is
+    what keeps the nine find_reps tests and the curl grades unchanged.
+
     The messages are detailed on purpose: a bare "partial rep" gives the user
-    nothing to DO. Each names the number it missed and hands over the exercise's
-    own fix (`depth_cue` / `tempo_cue`). `tags` and `depth_pct` carry the same
-    verdict in a machine-readable form so the overlay and the table can colour and
-    size things without re-reading the English.
+    nothing to DO. Each names the number it missed and hands over a fix. `tags` and
+    `depth_pct` carry the same verdict in a machine-readable form so the overlay and
+    the table can colour and size things without re-reading the English.
     """
     full_rom = exercise.full_rom
     down = exercise.down_enter
@@ -169,6 +179,15 @@ def form_feedback(
 
         issues: List[str] = []
         tags: List[str] = []
+
+        # Posture/safety first: a flagged form check leads the rep's issues, so it's
+        # what the on-video flash surfaces and what coaching prioritises fixing.
+        if checks_per_rep is not None:
+            for cr in checks_per_rep[n - 1]:
+                if cr.status == "flag":
+                    issues.append(cr.issue)
+                    tags.append(cr.key)
+
         if not is_full:
             issues.append(
                 f"Shallow - {vtx} stopped at {rep.min_angle:.0f} deg, short of the "
@@ -184,6 +203,125 @@ def form_feedback(
 
         grades.append(RepGrade(n, rep.min_angle, duration, is_full, issues, round(depth_pct), tags))
     return grades
+
+
+# =========================================================================
+# FORM CHECKS - layer 2b. The rep exists and its depth/tempo are graded above;
+# this looks at the REST of the body across the same rep window. It is deliberately
+# separate from find_reps: the detector still counts on one clean angle, and a check
+# that can't be seen (limb out of frame) is reported "not assessed", never a penalty.
+# The per-exercise checks themselves are data in exercises.py (FormCheck).
+# =========================================================================
+
+ASSESS_MIN = 0.6   # a check needs all its landmarks visible in >= this fraction of a
+                   # rep's frames to be judged at all; below it, the rep is "not assessed"
+
+
+@dataclass
+class CheckResult:
+    """One FormCheck's verdict for one rep. `status` is the whole story:
+      "ok"   - assessed and within bounds
+      "flag" - assessed and out of bounds (issue/tag populated)
+      "skip" - not assessable this rep (too much of it was out of frame)"""
+    key: str
+    label: str
+    status: str                    # "ok" | "flag" | "skip"
+    value: Optional[float] = None  # the reduced measurement, degrees (None when skipped)
+    issue: str = ""                # human line; populated only when status == "flag"
+
+
+def _vertical_dev(p0, p1) -> float:
+    """How far the p0->p1 segment leans off vertical, in degrees: 0 = plumb,
+    90 = flat. Sign-free - which end is up doesn't matter, only the tilt - so it
+    reads the same whether we hand it shoulder->hip or hip->shoulder."""
+    dx = p1[0] - p0[0]
+    dy = p1[1] - p0[1]
+    return math.degrees(math.atan2(abs(dx), abs(dy)))
+
+
+def _reduce(check: "FormCheck", measured: List[tuple], bottom_i: int) -> float:
+    """Collapse a rep's per-frame measurements to the one number the limit compares
+    against. `measured` is [(sample_index, value), ...]; `bottom_i` is the rep's
+    deepest frame, for the at_bottom kind."""
+    vals = [v for _, v in measured]
+    if check.reduce == "max":
+        return max(vals)
+    if check.reduce == "min":
+        return min(vals)
+    if check.reduce == "range":
+        return max(vals) - min(vals)
+    # at_bottom: the measurement on the frame nearest the rep's deepest point.
+    return min(measured, key=lambda iv: abs(iv[0] - bottom_i))[1]
+
+
+def evaluate_checks(
+    rep: Rep,
+    samples: Sequence["Sample"],        # video.Sample; each carries .landmarks (33-pt map)
+    angles: Sequence[Optional[float]],  # the SAME smoothed primary series find_reps walked
+    side: str,
+    exercise: "Exercise",
+) -> List[CheckResult]:
+    """
+    Grade every FormCheck this exercise carries, within one detected rep window.
+
+    find_reps stays the one-angle state machine it has always been; this is the "and
+    also look at the whole body" pass bolted on beside it. For each check we look only
+    at the frames of THIS rep, measure it wherever its landmarks are visible, and
+    reduce to one number to compare against the check's limit.
+
+    Out of frame is not a fault. A check is judged only if enough of the rep's frames
+    actually saw all its landmarks (ASSESS_MIN); below that it is "skip" - surfaced as
+    "not assessed", never a penalty. A legs-cropped curl clip therefore degrades to
+    exactly the behaviour this file had before form checks existed.
+    """
+    if not exercise.checks:
+        return []
+
+    lo = rep.start_idx
+    hi = min(rep.end_idx, len(samples) - 1)
+    window = range(lo, hi + 1)
+    win_len = max(1, hi - lo + 1)
+
+    # The rep's deepest frame, for at_bottom checks: the smallest primary angle we
+    # actually measured inside the window (fall back to the start if all were blind).
+    bottom_i, best = lo, None
+    for i in window:
+        a = angles[i] if i < len(angles) else None
+        if a is not None and (best is None or a < best):
+            best, bottom_i = a, i
+
+    results: List[CheckResult] = []
+    for chk in exercise.checks:
+        idxs = chk.sides.get(side)
+        if not idxs:                       # this check doesn't watch the tracked side
+            results.append(CheckResult(chk.key, chk.label, "skip"))
+            continue
+
+        # Per-frame measurements, only where EVERY landmark the check needs is visible.
+        measured: List[tuple] = []         # (sample_index, value)
+        for i in window:
+            lm = samples[i].landmarks if i < len(samples) else None
+            if lm is None:
+                continue
+            pts = [lm.get(j) for j in idxs]
+            if any(p is None or p[2] < chk.min_vis for p in pts):
+                continue
+            xy = [(p[0], p[1]) for p in pts]
+            val = calc_angle(*xy) if chk.measure == "angle" else _vertical_dev(*xy)
+            measured.append((i, val))
+
+        if len(measured) / win_len < ASSESS_MIN:
+            results.append(CheckResult(chk.key, chk.label, "skip"))
+            continue
+
+        value = _reduce(chk, measured, bottom_i)
+        flagged = value > chk.limit if chk.compare == "over" else value < chk.limit
+        if flagged:
+            issue = f"{chk.fault} ({value:.0f} deg). {chk.cue}"
+            results.append(CheckResult(chk.key, chk.label, "flag", round(value, 1), issue))
+        else:
+            results.append(CheckResult(chk.key, chk.label, "ok", round(value, 1)))
+    return results
 
 
 # =========================================================================
@@ -277,6 +415,58 @@ def run_tests() -> bool:
     fast_t = [i * 0.05 for i in range(9)]
     g = form_feedback(find_reps(_clean_rep()), fast_t, ex)
     results.append(_check("rushed rep -> tagged rushed", "rushed" in g[0].tags, True))
+
+    # --- FORM CHECKS (evaluate_checks). Synthetic landmark maps, no video needed. ---
+    # These are the spec for the "look at the whole body" layer the same way the
+    # cases above are the spec for detection: build a rep out of hand-placed joints
+    # and assert the check fires, stays quiet, or bows out when a limb is unseen.
+    from types import SimpleNamespace
+    from exercises import BICEP_CURL
+
+    def S(pts):
+        """A stand-in Sample - only .landmarks is read here. pts maps a BlazePose
+        index to (x, y) or (x, y, visibility); visibility defaults to fully seen."""
+        return SimpleNamespace(
+            landmarks={i: (p[0], p[1], p[2] if len(p) > 2 else 1.0) for i, p in pts.items()}
+        )
+
+    rep5 = Rep(0, 4, 50.0)                       # a 5-frame rep, deepest in the middle
+    ang5 = [160.0, 120.0, 50.0, 120.0, 160.0]
+    keys = lambda res: {r.key: r for r in res}
+
+    # A clean curl: upper arm hanging vertical, torso still, legs straight and planted.
+    clean_lm = {11: (100, 100), 13: (100, 200), 23: (110, 300), 25: (110, 400), 27: (110, 500)}
+    good = keys(evaluate_checks(rep5, [S(clean_lm)] * 5, ang5, "left", BICEP_CURL))
+    results.append(_check("clean form -> elbow ok", good["elbow"].status, "ok"))
+    results.append(_check("clean form -> swing ok", good["swing"].status, "ok"))
+    results.append(_check("clean form -> legs ok", good["legs"].status, "ok"))
+
+    # Elbow drifts forward through the middle of the rep: the upper arm tilts off
+    # vertical, and the worst tilt crosses the limit.
+    drift = [S({**clean_lm, 13: (215, 200)}) if i in (1, 2, 3) else S(clean_lm) for i in range(5)]
+    results.append(_check("elbow drift -> flag",
+                          keys(evaluate_checks(rep5, drift, ang5, "left", BICEP_CURL))["elbow"].status, "flag"))
+
+    # Torso rocks back and forth (shoulder swings out and back): the swing RANGE, not
+    # any single lean, is what trips it - and the arm stays clean underneath.
+    sway = [S({**clean_lm, 11: (100 + 35 * abs(2 - i), 100)}) for i in range(5)]
+    swres = keys(evaluate_checks(rep5, sway, ang5, "left", BICEP_CURL))
+    results.append(_check("torso swing -> flag", swres["swing"].status, "flag"))
+    results.append(_check("torso swing, elbow still ok", swres["elbow"].status, "ok"))
+
+    # Legs cropped out of frame (knee/ankle below CONF_MIN): not assessed, never a
+    # penalty - and the arm, still in frame, is judged as normal.
+    cropped = {11: (100, 100), 13: (100, 200), 23: (110, 300),
+               25: (110, 400, 0.1), 27: (110, 500, 0.1)}
+    cres = keys(evaluate_checks(rep5, [S(cropped)] * 5, ang5, "left", BICEP_CURL))
+    results.append(_check("legs cropped -> not assessed", cres["legs"].status, "skip"))
+    results.append(_check("legs cropped, arm still assessed", cres["elbow"].status, "ok"))
+
+    # The flag reaches the RepGrade: posture leads the issues, so it's what the video
+    # flashes and what coaching fixes first.
+    graded = form_feedback([rep5], [i * 0.4 for i in range(5)], BICEP_CURL,
+                           [evaluate_checks(rep5, drift, ang5, "left", BICEP_CURL)])
+    results.append(_check("form flag -> tagged on the rep", "elbow" in graded[0].tags, True))
 
     return all(results)
 

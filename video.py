@@ -26,7 +26,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -65,6 +65,13 @@ class Sample:
     right: Optional[float]
     left_vis: float
     right_vis: float
+    # Every BlazePose-33 point this frame, as {index: (x_px, y_px, visibility)}, or
+    # None when no pose was found. The primary angle above is the ONE signal reps.py
+    # counts on; this is the rest of the body, kept so the form checks can judge the
+    # whole lift (torso lean, elbow drift, ...) without a second detection pass. Same
+    # pixel space as the angle (normalized * w/h), so it drops straight into
+    # calc_angle - and render.py draws its skeleton from exactly this, no duplicate list.
+    landmarks: Optional[Dict[int, Tuple[float, float, float]]] = None
 
 
 def _open(path: Path):
@@ -161,9 +168,16 @@ def extract_series(path, exercise: Exercise, stride: int = STRIDE) -> tuple[List
     return samples, meta
 
 
+def _landmark_map(lms, w: int, h: int) -> Dict[int, Tuple[float, float, float]]:
+    """All 33 landmarks as {index: (x_px, y_px, visibility)}, in the same pixel space
+    the angle is measured in (normalized * w/h - see below for why that matters). One
+    map per frame; the form checks and the overlay both read it."""
+    return {i: (lm.x * w, lm.y * h, lm.visibility or 0.0) for i, lm in enumerate(lms)}
+
+
 def _to_sample(result, idx: int, t: float, w: int, h: int, exercise: Exercise) -> Sample:
     if not result.pose_landmarks:
-        return Sample(idx, t, None, None, 0.0, 0.0)
+        return Sample(idx, t, None, None, 0.0, 0.0, None)
     lms = result.pose_landmarks[0]
 
     # (a, b, c) is the exercise's joint triplet for this side - b is the vertex the
@@ -183,7 +197,8 @@ def _to_sample(result, idx: int, t: float, w: int, h: int, exercise: Exercise) -
         pts = [np.array([lms[i].x * w, lms[i].y * h]) for i in (a, b, c)]
         out[side] = (float(calc_angle(*pts)), vis)
 
-    return Sample(idx, t, out["left"][0], out["right"][0], out["left"][1], out["right"][1])
+    return Sample(idx, t, out["left"][0], out["right"][0], out["left"][1], out["right"][1],
+                  _landmark_map(lms, w, h))
 
 
 def pick_side(samples: List[Sample]) -> tuple[str, dict]:
