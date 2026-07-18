@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from analyzer import CONF_MIN, analyze
@@ -73,6 +74,23 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Gym Trainer", version="0.2.0", lifespan=lifespan)
+
+# The analysis API is intentionally anonymous and uses no cookies. Keep browser
+# access origin-scoped while making local Next.js development work out of the box.
+# Production deployments can add one or more comma-separated frontend origins.
+default_origins = "http://localhost:3000,http://127.0.0.1:3000"
+cors_origins = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ORIGINS", default_origins).split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -151,7 +169,7 @@ async def _run_job(token: str, src: str, dst: str, exercise_key: str) -> None:
         Path(src).unlink(missing_ok=True)        # keep only the rendered .webm
 
 
-@app.post("/analyze/video")
+@app.post("/analyze/video", status_code=202)
 async def analyze_video_endpoint(
     file: UploadFile = File(...),
     exercise: str = Form("bicep_curl"),
