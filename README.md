@@ -14,7 +14,9 @@ depth and tempo, and the whole analysis painted back onto the video — skeleton
 live elbow angle, and a running rep counter.
 
 Built for the namastedev.com hackathon. Pose estimation via MediaPipe Tasks,
-served with FastAPI, packaged for Hugging Face Spaces (Docker).
+served with FastAPI, deployed on Hugging Face Spaces (Docker).
+
+**▶ Live demo:** https://huggingface.co/spaces/dmdev261/ai-gym-trainer
 
 ## Try it
 
