@@ -35,5 +35,7 @@ urllib.request.urlretrieve( \
 ENV POSE_BACKEND=mediapipe \
     POSE_MODEL=models/pose_landmarker_lite.task
 
+# Bind to $PORT when the platform injects one (Railway), else 7860 (HF Spaces).
+# Shell form so the var expands; exec so uvicorn is PID 1 and takes SIGTERM directly.
 EXPOSE 7860
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-7860}

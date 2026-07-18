@@ -1,0 +1,29 @@
+# Controls what `railway up` uploads. Mirror .dockerignore + .gitignore so the
+# upload is only the runtime files — not the 114MB data/ folder, which the
+# Docker build discards anyway (see .dockerignore).
+
+# ---- Python bytecode ----
+__pycache__/
+*.pyc
+
+# ---- Virtualenvs ----
+.venv/
+venv/
+
+# ---- Run / debug artifacts ----
+out/
+probe_out/
+angle_series.json
+angle_series.png
+
+# ---- Large weights not used by the prod (mediapipe-lite) image ----
+models/pose_landmarker_heavy.task
+yolov8n-pose.pt
+
+# ---- Dev-only / non-runtime (excluded from the image by .dockerignore) ----
+.git/
+data/
+scripts/
+raw-docs/
+requirements-dev.txt
+LEARNINGS.md
