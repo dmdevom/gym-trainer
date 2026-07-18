@@ -172,6 +172,30 @@ drawn along a real seam keeps paying out for reasons you didn't think of.** The
 seam here was real: 17 vs 33 keypoints, pixels vs normalised, different indices
 for the same joint.
 
+## 11. On clean input the two models agree, so speed is the whole argument
+
+#5 compared YOLO and MediaPipe on one hard photo, where they landed 175px apart
+with opposite confidences — the pathological case. Running both frame-for-frame
+on a clean side-on curl (`scripts/compare_backends.py`, both pinned to CPU
+because the deploy box has none of the GPU this laptop does) told the opposite,
+more useful story:
+
+```
+                 CPU median     ~300-frame request    first frame
+MediaPipe        41 ms/frame    ~12 s                 61 ms
+YOLOv8n-pose     129 ms/frame   ~39 s                 2109 ms
+```
+
+The two elbow-angle series agreed to a **median 5.2° (max 11°)** across all 117
+shared frames — visibly the same wave, YOLO just a hair deeper at every peak.
+
+So #5 and this aren't in conflict; they're one lesson at two input qualities. On
+a bad photo, disagreement is the quality signal. On good video, agreement means
+the backend choice is pure cost — and MediaPipe is ~3× faster on the CPU that
+serves the request, the one axis that was free to move. The 129 ms/frame here
+also lands right on the 133 ms I measured back in #9 by a completely different
+route, which is the kind of coincidence that makes me trust a number.
+
 ---
 
 ## Smaller things that cost me time

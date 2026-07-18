@@ -31,11 +31,21 @@ Open `/docs` for the interactive API. `POST /analyze/photo` with an image.
 
 ## Why MediaPipe and not YOLO
 
-<!-- TODO: fill this in after you run the benchmark. You have both backends
-     behind one interface, so this is a real measured answer, not a vibe:
-       - latency per frame, both models, same video
-       - how far apart they place each joint on the same photo
-       - why that gap matters for a 300-frame video request -->
+Both backends sit behind one interface (`backends.py`), so this is measured, not
+a vibe. Same clip, same arm, both pinned to CPU — the deploy box (HF Spaces,
+2 vCPU) has no GPU — via `scripts/compare_backends.py`:
+
+| backend      | CPU latency  | per 300-frame request | first-frame warmup |
+| ------------ | ------------ | --------------------- | ------------------ |
+| MediaPipe    | 41 ms/frame  | ~12 s                 | 61 ms              |
+| YOLOv8n-pose | 129 ms/frame | ~39 s                 | 2.1 s              |
+
+MediaPipe is ~3× faster on the hardware that actually serves the request, and
+the two agree to a **median 5.2° (max 11°)** elbow angle across every shared
+frame — so on clean side-on input they tell the same story, and the choice is
+cost, not accuracy. YOLO also pulls in torch (~200–350 MB resident): fine on HF's
+16 GB, but it's exactly what rules YOLO out on a 512 MB tier. MediaPipe ships;
+YOLO stays opt-in behind `POSE_BACKEND=yolo`. Details in [LEARNINGS.md](LEARNINGS.md) #9 and #11.
 
 ## Running locally
 
