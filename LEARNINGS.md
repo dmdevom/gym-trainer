@@ -238,6 +238,35 @@ samples, never re-detected. Detecting every frame would be a third more model
 calls to move a wrist a few pixels — and worse, a second opinion the counter
 could contradict. Sparse for the truth, dense only for the picture.
 
+## 14. The library grew a system dependency and only the deploy noticed
+
+The Space built clean, then died on boot:
+
+```
+OSError: libGLESv2.so.2: cannot open shared object file: No such file or directory
+```
+
+MediaPipe 0.10.35 `dlopen`s the GLES/EGL stack the moment it creates a landmarker.
+My laptop has those libraries because it has a desktop GL stack; `python:3.11-slim`
+does not. So `import mediapipe` succeeds in both places and the crash only happens
+on the machine with no monitor — which is the only machine that serves the app.
+
+The Dockerfile installed `libgl1` (opencv-headless needs it) and stopped there,
+because an earlier MediaPipe was content with that. The fix was NOT to guess the
+next missing `.so`, rebuild, guess again — that's a multi-minute round trip per
+guess on a remote builder. I ran `ldd` on the actual `libmediapipe.so` locally and
+read off every GL-family library it NEEDs in one shot:
+
+```
+libGLESv2.so.2      -> libgles2
+libEGL.so.1         -> libegl1
+libGLdispatch.so.0  -> (pulled in by the two above)
+```
+
+One rebuild, app up, `/health` green. This is #6 seen from the other side: the
+library moves faster than the Dockerfile written against it. When a shared object
+won't load, `ldd` the thing that fails — don't bisect the apt line.
+
 ---
 
 ## Smaller things that cost me time

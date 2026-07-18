@@ -1,9 +1,12 @@
 FROM python:3.11-slim
 
-# opencv-python-headless and mediapipe still link against these. Ten megabytes
-# to delete an entire class of "ImportError: libGL.so.1" at 23:00 on the 19th.
+# opencv-python-headless and mediapipe link against these. mediapipe 0.10.35
+# also dlopens the GLES/EGL stack (libGLESv2.so.2, libEGL.so.1) at startup -
+# present on a desktop, absent on slim, so the import passes locally and the app
+# dies on boot here. A few megabytes to delete a whole class of "cannot open
+# shared object file" (libGLdispatch.so.0 comes in as a dependency of these).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 libglib2.0-0 \
+        libgl1 libglib2.0-0 libgles2 libegl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # HF Spaces runs containers as uid 1000. Stay root and the first thing that
