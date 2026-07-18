@@ -31,3 +31,6 @@ scripts/
 raw-docs/
 requirements-dev.txt
 LEARNINGS.md
+
+# ---- Separate frontend app (Next.js in web/; deploys on its own, never in the API image) ----
+web/
