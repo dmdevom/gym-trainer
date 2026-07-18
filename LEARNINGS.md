@@ -196,6 +196,48 @@ serves the request, the one axis that was free to move. The 129 ms/frame here
 also lands right on the 133 ms I measured back in #9 by a completely different
 route, which is the kind of coincidence that makes me trust a number.
 
+## 12. The browser won't play what OpenCV can write
+
+The annotated video was meant to be the demo's money shot, and it nearly wasn't
+playable at all. `cv2.VideoWriter` with an `avc1`/`H264` fourcc **fails to open**
+on this box (OpenCV 5.0.0): it reaches for the `h264_v4l2m2m` hardware encoder,
+finds no device, and there is no software x264 to fall back to. The one mp4 codec
+that *does* open is `mp4v` — MPEG-4 Part 2 — which Chrome and Firefox refuse to
+play in a `<video>` tag. So the happy path writes a file that plays fine in VLC
+and shows a black rectangle in the browser, with no error at either end.
+
+The escape hatch is **VP8 in a `.webm`**:
+
+```
+fourcc avc1  -> opened=False     <- no encoder
+fourcc H264  -> opened=False
+fourcc mp4v  -> opened=True       <- opens, but the browser won't decode it
+fourcc VP80  -> opened=True       <- opens AND every browser plays it
+```
+
+`ffprobe` confirms the VP8 file is real (`codec_name=vp8`), it plays natively
+everywhere, and it needs no extra dependency — no system `ffmpeg`, no
+`imageio-ffmpeg` wheel baked into the image. One fourcc string, `VP80`.
+
+The lesson that generalises: **"the encoder ran" and "the target can decode it"
+are two different questions**, and the second is the one the demo lives or dies
+on. Test playback on the actual target, not the exit code and the file size.
+
+## 13. The rep count on the video and in the JSON must be the same number
+
+The annotated video counts reps with an on-screen counter; the API counts them in
+`find_reps`. If those two ever disagree the whole product looks broken, even when
+each is internally correct. So I didn't let them be two computations. Both read
+from **one** detection pass: `summarize()` produces the reps and their end times,
+the JSON reports them, and the video's counter is literally `sum(end_t <= now)`
+over that same list. There is nothing to drift because there is one source and two
+views of it.
+
+The skeleton *is* drawn on every frame, but interpolated between the sparse
+samples, never re-detected. Detecting every frame would be a third more model
+calls to move a wrist a few pixels — and worse, a second opinion the counter
+could contradict. Sparse for the truth, dense only for the picture.
+
 ---
 
 ## Smaller things that cost me time

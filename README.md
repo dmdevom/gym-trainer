@@ -9,25 +9,57 @@ app_port: 7860
 
 # AI Gym Trainer
 
-Upload a photo of a bicep curl. Get back the elbow angle and where you are in
-the rep. Video, rep counting and form feedback to follow.
+Upload a side-on video of bicep curls. Get your reps counted, each one graded for
+depth and tempo, and the whole analysis painted back onto the video — skeleton,
+live elbow angle, and a running rep counter.
 
 Built for the namastedev.com hackathon. Pose estimation via MediaPipe Tasks,
-served with FastAPI, deployed on Hugging Face Spaces.
+served with FastAPI, packaged for Hugging Face Spaces (Docker).
 
 ## Try it
 
-Open `/docs` for the interactive API. `POST /analyze/photo` with an image.
+Open `/` for the upload page: pick a clip, wait ~15 s, and watch the annotated
+video next to a per-rep table and the elbow-angle chart. Or drive it directly:
+
+- `POST /analyze/video` — a video in, JSON out (rep count, per-rep grade, angle
+  series) plus a `/results/<id>` URL for the rendered `.webm`.
+- `POST /analyze/photo` — a single frame in, elbow angle + phase out.
+- `python analyze.py clip.mp4` — the graded summary in your terminal.
+- `python render.py clip.mp4` — just the annotated video, to `out/annotated.webm`.
+
+Example `/analyze/video` response:
 
 ```json
 {
-  "elbow_angle": 77.4,
-  "phase": "mid-rep",
-  "side_analyzed": "right",
-  "confidence": 0.99,
-  "backend": "mediapipe"
+  "reps": 3,
+  "full_reps": 3,
+  "verdict": "3/3 full reps",
+  "per_rep": [
+    { "number": 1, "min_angle": 53.6, "duration_s": 2.7, "full": true, "issues": [] }
+  ],
+  "video_url": "/results/…"
 }
 ```
+
+## How it works
+
+```
+video.py    ->  a smoothed per-frame elbow-angle series      (the signal)
+reps.py     ->  hysteresis state machine counts cycles,
+                then grades each on depth + tempo             (the meaning)
+analyze.py  ->  summarize(): one dict the CLI, API and video share
+render.py   ->  paints that summary onto every frame -> VP8/webm
+main.py     ->  FastAPI: the page, the endpoints, serving the result
+```
+
+Two decisions worth knowing:
+
+- The rep count **on the video** and the rep count **in the JSON** are the same
+  number by construction — one detection pass feeds both, and the on-screen
+  counter is literally "reps whose end-time has passed." See LEARNINGS.md #13.
+- The annotated output is `.webm`/VP8 because that is the one format this OpenCV
+  can *encode* and a browser can *play* — H.264 wouldn't open, and the mp4 it does
+  write, the browser won't decode. See LEARNINGS.md #12.
 
 ## Why MediaPipe and not YOLO
 
@@ -57,14 +89,15 @@ mkdir -p models
 wget -O models/pose_landmarker_lite.task \
   https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
 
-python analyzer.py                      # unit tests for the angle maths
-uvicorn main:app --reload               # then open http://localhost:8000/docs
+python reps.py                                 # the rep-counter's unit tests
+python analyze.py data/videos/curl_right.mp4   # graded summary in the terminal
+uvicorn main:app --reload                      # then open http://localhost:8000/
 ```
 
-Swap models to compare:
+Compare the two backends on a real clip (needs the dev deps):
 
 ```bash
-POSE_BACKEND=yolo uvicorn main:app --reload
+python scripts/compare_backends.py data/videos/curl_right.mp4
 ```
 
 ## Notes

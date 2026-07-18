@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Gym Trainer</title>
+<!-- Chart.js from CDN. This page is SERVED (the browser has a network), so a CDN
+     is fine here — unlike the model, which we bake in because the server's disk
+     isn't persistent. If the CDN is blocked the page still shows video + table. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#14171c; --card:#1e232b; --line:#2c333d; --ink:#eef1f5; --dim:#9aa4b2;
+          --arm:#ff9800; --ok:#5ad25a; --bad:#ff5b6e; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:720px; margin:0 auto; padding:32px 20px 64px; }
+  h1 { font-size:26px; margin:0 0 4px; }
+  .sub { color:var(--dim); margin:0 0 28px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:22px; margin-bottom:22px; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  input[type=file] { color:var(--dim); flex:1 1 240px; min-width:0; }
+  input[type=file]::file-selector-button {
+    background:#2b3340; color:var(--ink); border:1px solid var(--line);
+    border-radius:8px; padding:9px 14px; margin-right:12px; cursor:pointer; }
+  button { background:var(--arm); color:#1a1300; border:0; border-radius:8px;
+           padding:11px 22px; font-weight:700; font-size:15px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .hint { color:var(--dim); font-size:13.5px; margin-top:14px; }
+  .status { display:none; align-items:center; gap:12px; color:var(--dim); }
+  .status.on { display:flex; }
+  .spin { width:18px; height:18px; border:3px solid var(--line);
+          border-top-color:var(--arm); border-radius:50%; animation:spin .8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .err { display:none; color:var(--bad); border:1px solid var(--bad);
+         border-radius:10px; padding:12px 14px; margin-top:6px; }
+  #results { display:none; }
+  video { width:100%; border-radius:12px; background:#000; display:block; }
+  .verdict { font-size:22px; font-weight:700; margin:0 0 4px; }
+  .verdict .n { color:var(--arm); }
+  .meta { color:var(--dim); font-size:13.5px; margin-bottom:18px; }
+  table { width:100%; border-collapse:collapse; font-size:14.5px; }
+  th, td { text-align:left; padding:9px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:600; }
+  td.n { font-variant-numeric:tabular-nums; }
+  .tag { font-size:12.5px; font-weight:700; padding:2px 9px; border-radius:999px; }
+  .tag.ok { color:var(--ok); background:rgba(90,210,90,.12); }
+  .tag.bad { color:var(--bad); background:rgba(255,91,110,.12); }
+  .issues { color:var(--dim); font-size:13.5px; }
+  h2 { font-size:15px; color:var(--dim); text-transform:uppercase;
+       letter-spacing:.06em; margin:26px 0 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>AI Gym Trainer</h1>
+  <p class="sub">Upload a side-on bicep-curl clip. Get your reps counted, graded, and drawn back onto the video.</p>
+
+  <div class="card">
+    <div class="row">
+      <input id="file" type="file" accept="video/*">
+      <button id="go">Analyze</button>
+    </div>
+    <div class="hint">
+      Film <b>side-on</b> with your whole arm in frame (that's the one angle that shows the curl — see the learnings).
+      A few reps, ~50&nbsp;MB max. Analysis takes roughly 10–25&nbsp;s.
+    </div>
+    <div id="status" class="status"><div class="spin"></div><span id="statusText">Analyzing…</span></div>
+    <div id="err" class="err"></div>
+  </div>
+
+  <div id="results">
+    <div class="card">
+      <p class="verdict" id="verdict"></p>
+      <p class="meta" id="meta"></p>
+      <video id="video" controls autoplay loop muted playsinline></video>
+    </div>
+
+    <div class="card">
+      <h2>Per-rep breakdown</h2>
+      <table>
+        <thead><tr><th>#</th><th>Deepest</th><th>Tempo</th><th>Full ROM</th><th>Notes</th></tr></thead>
+        <tbody id="reps"></tbody>
+      </table>
+
+      <h2>Elbow angle over time</h2>
+      <canvas id="chart" height="180"></canvas>
+      <p class="hint" id="chartNote" style="display:none">
+        Chart library didn't load (offline?). The video and table above are the whole story anyway.
+      </p>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let chart = null;
+
+$("go").addEventListener("click", analyze);
+$("file").addEventListener("change", () => { $("err").style.display = "none"; });
+
+async function analyze() {
+  const f = $("file").files[0];
+  if (!f) { showErr("Pick a video first."); return; }
+
+  setBusy(true);
+  $("results").style.display = "none";
+  $("err").style.display = "none";
+
+  try {
+    const body = new FormData();
+    body.append("file", f);
+    const res = await fetch("/analyze/video", { method: "POST", body });
+    const data = await res.json();
+    if (!res.ok) {
+      showErr(data.detail || data.error || ("Request failed (" + res.status + ")."));
+      return;
+    }
+    render(data);
+  } catch (e) {
+    showErr("Could not reach the server. Is it still running?");
+  } finally {
+    setBusy(false);
+  }
+}
+
+function setBusy(on) {
+  $("go").disabled = on;
+  $("status").classList.toggle("on", on);
+}
+
+function showErr(msg) {
+  const el = $("err");
+  el.textContent = msg;
+  el.style.display = "block";
+}
+
+function render(d) {
+  const m = d.meta;
+  const nice = d.verdict.replace(/(\d+\/\d+)/, '<span class="n">$1</span>');
+  $("verdict").innerHTML = d.reps ? nice : "No complete reps found";
+  $("meta").textContent =
+    `${m.file} · ${m.arm} arm · ${m.sample_hz} Hz · rotation ${m.rotation_applied}°`;
+
+  $("video").src = d.video_url;
+  $("video").load();
+
+  const tb = $("reps");
+  tb.innerHTML = "";
+  if (!d.per_rep.length) {
+    tb.innerHTML = `<tr><td colspan="5" class="issues">
+      Nothing counted. Usually rotation or a front-on camera — try a clean side-on clip.</td></tr>`;
+  }
+  for (const r of d.per_rep) {
+    const clean = r.issues.length === 0;
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td class="n">${r.number}</td>` +
+      `<td class="n">${r.min_angle.toFixed(0)}°</td>` +
+      `<td class="n">${r.duration_s.toFixed(1)}s</td>` +
+      `<td>${r.full ? '<span class="tag ok">yes</span>' : '<span class="tag bad">no</span>'}</td>` +
+      `<td class="issues">${clean ? "clean" : r.issues.join("; ")}</td>`;
+    tb.appendChild(tr);
+  }
+
+  $("results").style.display = "block";
+  drawChart(d.series, d.thresholds);
+}
+
+function drawChart(series, thr) {
+  if (typeof Chart === "undefined") { $("chartNote").style.display = "block"; return; }
+  const labels = series.t.map((t) => t.toFixed(1));
+  const flat = (v) => labels.map(() => v);
+  const line = (label, color, dash) => ({
+    label, data: flat(0), borderColor: color, borderWidth: 1, borderDash: dash,
+    pointRadius: 0, fill: false,
+  });
+
+  if (chart) chart.destroy();
+  chart = new Chart($("chart"), {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        { label: "elbow angle", data: series.angle, borderColor: "#ff9800",
+          borderWidth: 2, pointRadius: 0, tension: 0.3, spanGaps: false },
+        { ...line("full ROM " + thr.full_rom + "°", "#5ad25a", [4, 4]), data: flat(thr.full_rom) },
+        { ...line("up " + thr.up_enter + "°", "#5aa9ff", [2, 3]), data: flat(thr.up_enter) },
+        { ...line("down " + thr.down_enter + "°", "#ff5b6e", [2, 3]), data: flat(thr.down_enter) },
+      ],
+    },
+    options: {
+      animation: false,
+      scales: {
+        // Reversed, so a curl reads as UP — exactly what your body did, and what
+        // the PNG the pipeline writes to disk shows too.
+        y: { reverse: true, title: { display: true, text: "angle (deg)" },
+             grid: { color: "#2c333d" }, ticks: { color: "#9aa4b2" } },
+        x: { title: { display: true, text: "seconds" },
+             grid: { color: "#20262e" }, ticks: { color: "#9aa4b2", maxTicksLimit: 10 } },
+      },
+      plugins: { legend: { labels: { color: "#9aa4b2", boxWidth: 22 } } },
+    },
+  });
+}
+</script>
+</body>
+</html>

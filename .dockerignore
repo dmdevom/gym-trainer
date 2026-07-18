@@ -1,6 +1,6 @@
 # The prod image needs only the runtime files:
-#   main.py analyzer.py backends.py video.py reps.py
-#   models/pose_landmarker_lite.task requirements.txt README.md
+#   main.py analyzer.py backends.py video.py reps.py analyze.py render.py
+#   templates/index.html models/pose_landmarker_lite.task requirements.txt README.md
 # Everything listed below is excluded from the Docker build context.
 
 # ---- Python bytecode ----
