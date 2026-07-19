@@ -2,7 +2,7 @@
 
 import { Activity, BadgeCheck, Clock3, Dumbbell, RotateCcw, Sparkles, Target } from "lucide-react";
 import { useState } from "react";
-import { deriveStats, resultVideoUrl } from "@/lib/api";
+import { deriveStats, resolveCoachingTokens, resultVideoUrl } from "@/lib/api";
 import type { AnalysisResult } from "@/lib/types";
 import { AngleChart } from "./angle-chart";
 
@@ -15,6 +15,7 @@ interface ResultsDashboardProps {
 export function ResultsDashboard({ result, originalUrl, onReset }: ResultsDashboardProps) {
   const [mobileVideo, setMobileVideo] = useState<"original" | "analyzed">("analyzed");
   const stats = deriveStats(result);
+  const coachingText = (text: string) => resolveCoachingTokens(text, result.thresholds.tempo_min_s);
 
   return (
     <section className="results-section" id="results" aria-labelledby="results-title">
@@ -55,19 +56,19 @@ export function ResultsDashboard({ result, originalUrl, onReset }: ResultsDashbo
       <div className="results-columns">
         <article className="result-card coaching-card">
           <span className="card-kicker">Improve &amp; next session</span>
-          {result.coaching.session_story && <p className="coach-story">{result.coaching.session_story}</p>}
+          {result.coaching.session_story && <p className="coach-story">{coachingText(result.coaching.session_story)}</p>}
           <div className="coach-callouts">
-            <div><span>Focus next</span><strong>{result.coaching.focus}</strong></div>
-            {result.coaching.mental_cue && <div><span>Cue</span><strong className="mental-cue">{result.coaching.mental_cue}</strong></div>}
+            <div><span>Focus next</span><strong>{coachingText(result.coaching.focus)}</strong></div>
+            {result.coaching.mental_cue && <div><span>Cue</span><strong className="mental-cue">{coachingText(result.coaching.mental_cue)}</strong></div>}
           </div>
           <div className="coach-list">
-            {result.coaching.next_session.map((item) => <p key={item}>{item}</p>)}
+            {result.coaching.next_session.map((item) => <p key={item}>{coachingText(item)}</p>)}
           </div>
           <div className="cue-block">
             <span>Keep in mind</span>
-            <ul>{result.coaching.keep_in_mind.map((tip) => <li key={tip}>{tip}</li>)}</ul>
+            <ul>{result.coaching.keep_in_mind.map((tip) => <li key={tip}>{coachingText(tip)}</li>)}</ul>
           </div>
-          <p className="muscle-note">{result.coaching.muscle}</p>
+          <p className="muscle-note">{coachingText(result.coaching.muscle)}</p>
         </article>
 
         <article className="result-card chart-card">

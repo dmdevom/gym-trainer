@@ -75,3 +75,8 @@ export function deriveStats(result: AnalysisResult) {
     averageTempo: reps.length ? reps.reduce((sum, rep) => sum + rep.duration_s, 0) / reps.length : null,
   };
 }
+
+export function resolveCoachingTokens(text: string, tempoMinSeconds: number): string {
+  const tempo = Number.parseFloat(tempoMinSeconds.toFixed(2)).toString();
+  return text.replace(/\[?min_controlled_tempo_s\]?/gi, tempo);
+}
