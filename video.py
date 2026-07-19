@@ -85,7 +85,7 @@ def _open(path: Path):
     rot = int(cap.get(meta_flag) or 0) % 360 if meta_flag is not None else 0
     if auto_flag is not None:
         # Rotate it ourselves. OpenCV's auto-rotate depends on how its FFmpeg was
-        # built, so your Pop OS laptop and the HF Space container are allowed to
+        # built, so your Pop OS laptop and the production container are allowed to
         # disagree - and the failure is silent: MediaPipe just stops finding a
         # person, and you go debugging calc_angle for an hour. Explicit is cheap.
         cap.set(auto_flag, 0)

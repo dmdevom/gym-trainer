@@ -139,7 +139,7 @@ _ELBOW_PINNED = FormCheck(
     cue="Pin your elbow to your side - let only the forearm move.",
 )
 
-# Body english: rocking the torso (shoulder->hip) back and forth to throw the
+# Body swing: rocking the torso (shoulder->hip) back and forth to throw the
 # weight up. A clean rep barely moves it, so the RANGE of torso tilt over the rep -
 # not its absolute lean - is what flags the cheat.
 _TORSO_STILL = FormCheck(
@@ -156,6 +156,19 @@ _TORSO_STILL_STRICT = FormCheck(
     measure="vertical", sides={"left": (11, 23), "right": (12, 24)},
     reduce="range", compare="over", limit=9.0,
     cue="Strict reps only - if your torso swings, the bar is too heavy.",
+)
+
+# Heaving the weight with a head/neck bob - the head cranes or rocks to help drive the rep,
+# distinct from a whole-torso swing. Measured as the RANGE of the nose->shoulder tilt off
+# vertical across the rep. CALIBRATED off the curl clips: clean reps stay under ~13 deg (pass
+# clips ran 6.5-12.7), a heaved rep swings 40+ (the barbell-fail cheat reps hit 42-54), so 20
+# leaves clean reps clean with headroom. The nose tracks reliably even on the lite model, which
+# is why this one holds up where the hand/foot landmarks are too noisy to grade.
+_HEAD_STILL = FormCheck(
+    key="head", label="Head still", fault="Head bobbing",
+    measure="vertical", sides={"left": (0, 11), "right": (0, 12)},
+    reduce="range", compare="over", limit=20.0,
+    cue="Keep your head still and eyes forward - drive with the arm, not a neck bob.",
 )
 
 # Standing curl: the legs should stay planted and straight. Dip and drive with the
@@ -214,7 +227,7 @@ BICEP_CURL = Exercise(
     tempo_cue="Slow it down - control the lowering instead of dropping the weight.",
     muscle="Biceps brachii. It grows from full-range reps under control - the stretch "
            "at the bottom matters as much as the squeeze at the top.",
-    checks=(_ELBOW_PINNED, _TORSO_STILL, _LEGS_GROUNDED),
+    checks=(_ELBOW_PINNED, _TORSO_STILL, _HEAD_STILL, _LEGS_GROUNDED),
 )
 
 BARBELL_CURL = Exercise(
@@ -232,15 +245,15 @@ BARBELL_CURL = Exercise(
     sides={"left": (11, 13, 15), "right": (12, 14, 16)},
     vertex_name="elbow",
     up_enter=100.0,
-    down_enter=150.0,
+    down_enter=145.0,
     full_rom=75.0,
     tempo_min_s=1.2,
     gauge_deep=35.0,
     depth_cue="Curl the bar all the way to your chest for a full contraction.",
     tempo_cue="Control the negative - a 2-3s lower beats dropping the bar.",
-    muscle="Biceps brachii, both arms at once. Strict reps with no body english keep "
-           "the tension on the muscle instead of the momentum.",
-    checks=(_ELBOW_PINNED, _TORSO_STILL_STRICT, _LEGS_GROUNDED),
+    muscle="Biceps brachii, both arms at once. Strict reps without swinging your body or "
+           "jerking the weight up keep the tension on the muscle instead of the momentum.",
+    checks=(_ELBOW_PINNED, _TORSO_STILL_STRICT, _HEAD_STILL, _LEGS_GROUNDED),
 )
 
 SQUAT = Exercise(

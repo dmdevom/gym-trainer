@@ -63,6 +63,11 @@ from video import (
 MAX_SIDE = 960
 REF = float(MAX_SIDE)
 
+# Defensive cap for a rep's flash text. The upstream notes are bounded - the deterministic top-3
+# phrase and the LLM's validated flash both sit under llm_coach.FLASH_MAX_CHARS (100) - so this
+# only ever bites a malformed note, keeping the (now multi-line) flash from swallowing the frame.
+_FLASH_NOTE_CAP = 120
+
 # Native <video> controls overlay the bottom strip of the frame and pin visible
 # while the player is paused or ended (~a fifth of the displayed height in this
 # app's players). Any HUD that must stay readable draws above this line.
@@ -423,29 +428,48 @@ def _draw_tempo(img, active: Optional[dict], target: float, k: float, y0: int) -
 
 # --- the per-rep flash + the running tally --------------------------------
 
-def _flash_for(per_rep: List[dict], t: float, hold: float = 1.6):
-    """Just after a rep closes, name it - clean, or the full detailed reason it
-    wasn't. This is form_feedback's verdict surfacing at the moment the rep happened,
-    the whole message, not a two-word tag."""
+def _flash_for(per_rep: List[dict], t: float):
+    """Just after a rep closes, name it. The TEXT is `flash_note` - the deterministic top-3 grader
+    phrase, or the LLM's rephrase when that path is live - but the COLOUR is always decided here
+    from the deterministic tags/reason, so a reworded note can never mislabel a rep: amber =
+    performed but not counted, green = clean, red = a fault to fix. We show the MOST-RECENTLY-ended
+    rep (so a longer hold can never let an old flash mask a newer rep), and a busier rep with more
+    faults holds a little longer so its longer, multi-fault phrase stays readable."""
+    latest = None
     for r in per_rep:
-        e = r["end_t"]
-        if e <= t <= e + hold:
-            if not r["issues"]:
-                return f"Rep {r['number']}: clean - full range, controlled.", C_GREEN
-            return f"Rep {r['number']}: {r['issues'][0]}", C_RED
-    return None
+        if r["end_t"] <= t and (latest is None or r["end_t"] > latest["end_t"]):
+            latest = r
+    if latest is None:
+        return None
+    # More faults -> a longer phrase -> a longer hold (1.6s baseline, +0.5s per extra fault, ≤3.2s).
+    hold = min(3.2, 1.6 + 0.5 * max(0, len(latest["tags"]) - 1))
+    if t > latest["end_t"] + hold:
+        return None
+    if latest.get("reason"):
+        color = C_YELLOW      # a bad rep: an attempt to finish, not a form fault
+    elif not latest["tags"]:
+        color = C_GREEN       # clean
+    else:
+        color = C_RED         # a fault to fix
+    note = latest.get("flash_note") or ""
+    if len(note) > _FLASH_NOTE_CAP:   # defensive: bounded no matter what arrives
+        note = note[:_FLASH_NOTE_CAP - 1].rstrip() + "…"
+    return f"Rep {latest['number']}: {note}", color
 
 
 def _tally(per_rep: List[dict], t: float) -> dict:
     done = [r for r in per_rep if r["end_t"] <= t + 1e-9]
+    _reason = ("under_extension", "under_contraction")
     return {
         "reps": len(done),
         "full": sum(1 for r in done if r["full"]),
         "shallow": sum(1 for r in done if "shallow" in r["tags"]),
         "rushed": sum(1 for r in done if "rushed" in r["tags"]),
-        # One count for every posture/form fault, whatever its tag - the overlay
-        # names the specific one in the flash; the tally just keeps a running total.
-        "form": sum(1 for r in done if any(tg not in ("shallow", "rushed") for tg in r["tags"])),
+        # Bad reps: performed but not counted as full (didn't extend / didn't bend enough).
+        "incomplete": sum(1 for r in done if r.get("reason")),
+        # One count for every posture/form fault (any tag that isn't depth/tempo or an
+        # incompleteness reason) - the flash names the specific one; this is the total.
+        "form": sum(1 for r in done if any(tg not in ("shallow", "rushed") + _reason for tg in r["tags"])),
     }
 
 
@@ -459,7 +483,7 @@ def _active_tempo(per_rep: List[dict], t: float, tempo_min_s: float) -> Optional
 def _draw_flash(img, flash, k: float) -> None:
     text, color = flash
     h, w = img.shape[:2]
-    lines = _wrap(text, 0.6 * k, k, int(w * 0.88))
+    lines = _wrap(text, 0.6 * k, k, int(w * 0.88), max_lines=4)
     lh = int(28 * k)
     box_h = lh * len(lines) + int(16 * k)
     y0 = h - max(int(64 * k), int(h * CONTROLS_SAFE_FRAC)) - box_h
@@ -488,6 +512,8 @@ def _draw_hud(img, exercise: Exercise, reps_done: int, total: int, tally: dict,
         txt = f"{angle:.0f} {exercise.vertex_name}"
         _shadow_text(img, txt, (w - _text_w(txt, 0.8 * k, k) - int(14 * k), r1), 0.8 * k, _zone_color(angle, thr), k)
     tally_txt = f"{tally['full']} full  {tally['shallow']} short  {tally['rushed']} fast"
+    if tally["incomplete"]:
+        tally_txt += f"  {tally['incomplete']} uncounted"
     if tally["form"]:
         tally_txt += f"  {tally['form']} form"
     _shadow_text(img, tally_txt, (w - _text_w(tally_txt, 0.5 * k, k, 1) - int(14 * k), r2), 0.5 * k, C_DIM, k, 1)
@@ -528,6 +554,8 @@ def _draw_end_card(base: np.ndarray, summary: dict, exercise: Exercise, k: float
         y += int(46 * kc)
         t = _tally(summary["per_rep"], 1e18)
         line = f"{t['full']} full    {t['shallow']} shallow    {t['rushed']} rushed"
+        if t["incomplete"]:
+            line += f"    {t['incomplete']} not counted"
         if t["form"]:
             line += f"    {t['form']} form"
         _center(img, line, cx, y, 0.6 * kc, C_DIM, kc, 1)

@@ -15,7 +15,7 @@ actually pick the backend that ships:
 
 Both models are pinned to CPU on purpose. YOLO would otherwise grab the GPU that
 this laptop happens to have and the deploy box does not, and the timing would
-flatter it into a choice that dies on Hugging Face.
+flatter it into a choice that dies on the deploy box.
 
 Usage:
     ROTATE_DEG=270 python scripts/compare_backends.py data/videos/curl_right.mp4

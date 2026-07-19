@@ -3,7 +3,7 @@
 import { Activity, BadgeCheck, Clock3, Dumbbell, RotateCcw, Sparkles, Target } from "lucide-react";
 import { useState } from "react";
 import { deriveStats, resolveCoachingTokens, resultVideoUrl } from "@/lib/api";
-import type { AnalysisResult } from "@/lib/types";
+import type { AnalysisResult, RepGrade } from "@/lib/types";
 import { AngleChart } from "./angle-chart";
 
 interface ResultsDashboardProps {
@@ -53,6 +53,34 @@ export function ResultsDashboard({ result, originalUrl, onReset }: ResultsDashbo
         <VideoPanel className={mobileVideo === "analyzed" ? "mobile-active" : ""} label="AI landmarked" src={resultVideoUrl(result)} accent />
       </div>
 
+      <article className="result-card reps-card">
+        <div className="card-title-row"><div><span className="card-kicker">Rep by rep</span><h3>Form breakdown</h3></div></div>
+        {result.per_rep.length ? (
+          <>
+            <div className="rep-table-wrap">
+              <table className="rep-table">
+                <thead><tr><th>Rep</th><th>Deepest</th><th>Depth</th><th>Tempo</th><th>Status</th><th>Coach note</th></tr></thead>
+                <tbody>{result.per_rep.map((rep) => (
+                  <tr key={rep.number}>
+                    <td>#{rep.number}</td><td>{rep.min_angle.toFixed(0)}°</td><td>{rep.depth_pct}%</td><td>{rep.duration_s.toFixed(1)}s</td>
+                    <td><span className={`status-pill ${repStatus(rep).cls}`}>{repStatus(rep).label}</span></td>
+                    <td><ul className="coach-note-list">{coachNote(rep).map((b, i) => <li key={i}>{b}</li>)}</ul></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+            <div className="rep-mobile-list">{result.per_rep.map((rep) => (
+              <div className="rep-mobile-card" key={rep.number}>
+                <div><strong>Rep {rep.number}</strong><span className={`status-pill ${repStatus(rep).cls}`}>{repStatus(rep).label}</span></div>
+                <dl><div><dt>Depth</dt><dd>{rep.depth_pct}%</dd></div><div><dt>Deepest</dt><dd>{rep.min_angle.toFixed(0)}°</dd></div><div><dt>Tempo</dt><dd>{rep.duration_s.toFixed(1)}s</dd></div></dl>
+                <ul className="coach-note-list">{coachNote(rep).map((b, i) => <li key={i}>{b}</li>)}</ul>
+              </div>
+            ))}</div>
+          </>
+        ) : <div className="empty-reps">Try filming side-on with your full working limb visible, then analyze again.</div>}
+        {!!result.form_checks?.length && <FormChecks checks={result.form_checks} />}
+      </article>
+
       <div className="results-columns">
         <article className="result-card coaching-card">
           <span className="card-kicker">Improve &amp; next session</span>
@@ -80,33 +108,9 @@ export function ResultsDashboard({ result, originalUrl, onReset }: ResultsDashbo
         </article>
       </div>
 
-      <article className="result-card reps-card">
-        <div className="card-title-row"><div><span className="card-kicker">Rep by rep</span><h3>Form breakdown</h3></div></div>
-        {result.per_rep.length ? (
-          <>
-            <div className="rep-table-wrap">
-              <table className="rep-table">
-                <thead><tr><th>Rep</th><th>Deepest</th><th>Depth</th><th>Tempo</th><th>Status</th><th>Coach note</th></tr></thead>
-                <tbody>{result.per_rep.map((rep) => (
-                  <tr key={rep.number}>
-                    <td>#{rep.number}</td><td>{rep.min_angle.toFixed(0)}°</td><td>{rep.depth_pct}%</td><td>{rep.duration_s.toFixed(1)}s</td>
-                    <td><span className={`status-pill ${rep.full && !rep.tags.length ? "good" : "warn"}`}>{rep.full && !rep.tags.length ? "Clean" : "Improve"}</span></td>
-                    <td>{rep.issues.length ? rep.issues.join(" ") : "Full and controlled."}</td>
-                  </tr>
-                ))}</tbody>
-              </table>
-            </div>
-            <div className="rep-mobile-list">{result.per_rep.map((rep) => (
-              <div className="rep-mobile-card" key={rep.number}>
-                <div><strong>Rep {rep.number}</strong><span className={`status-pill ${rep.full && !rep.tags.length ? "good" : "warn"}`}>{rep.full && !rep.tags.length ? "Clean" : "Improve"}</span></div>
-                <dl><div><dt>Depth</dt><dd>{rep.depth_pct}%</dd></div><div><dt>Deepest</dt><dd>{rep.min_angle.toFixed(0)}°</dd></div><div><dt>Tempo</dt><dd>{rep.duration_s.toFixed(1)}s</dd></div></dl>
-                <p>{rep.issues.length ? rep.issues.join(" ") : "Full and controlled."}</p>
-              </div>
-            ))}</div>
-          </>
-        ) : <div className="empty-reps">Try filming side-on with your full working limb visible, then analyze again.</div>}
-        {!!result.form_checks?.length && <FormChecks checks={result.form_checks} />}
-      </article>
+      <div className="results-footer">
+        <button className="secondary-button" type="button" onClick={onReset}><RotateCcw size={17} /> Analyze another</button>
+      </div>
     </section>
   );
 }
@@ -137,4 +141,19 @@ function VideoPanel({ label, src, accent, className = "" }: { label: string; src
 
 function capitalize(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+// A bad rep (reason set) gets its own amber "Incomplete" pill — it was performed but not
+// counted as full, distinct from a counted-but-improvable rep.
+function repStatus(rep: RepGrade): { label: string; cls: string } {
+  if (rep.reason) return { label: "Incomplete", cls: "incomplete" };
+  if (rep.full && !rep.tags.length) return { label: "Clean", cls: "good" };
+  return { label: "Improve", cls: "warn" };
+}
+
+// The detailed "Coach note", as bullet points: backend always sets coach_note (LLM-authored
+// when a key is present, else the deterministic grader issues); the rest is a defensive fallback.
+function coachNote(rep: RepGrade): string[] {
+  if (rep.coach_note?.length) return rep.coach_note;
+  return rep.issues.length ? rep.issues : ["Full and controlled."];
 }

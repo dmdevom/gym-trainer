@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 libglib2.0-0 libgles2 libegl1 \
     && rm -rf /var/lib/apt/lists/*
 
-# HF Spaces runs containers as uid 1000. Stay root and the first thing that
-# tries to write to the working directory kills the Space at startup.
+# Managed container hosts commonly run containers as uid 1000. Stay root and the
+# first thing that tries to write to the working directory kills the app at startup.
 RUN useradd -m -u 1000 user
 USER user
 ENV HOME=/home/user \
@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=user . .
 
-# Bake the weights into the image. The Space's disk is not persistent, so
+# Bake the weights into the image. The container disk is not persistent, so
 # anything fetched at runtime gets fetched again on every single cold start.
 RUN mkdir -p models && python -c "\
 import urllib.request; \
@@ -35,7 +35,7 @@ urllib.request.urlretrieve( \
 ENV POSE_BACKEND=mediapipe \
     POSE_MODEL=models/pose_landmarker_lite.task
 
-# Bind to $PORT when the platform injects one (Railway), else 7860 (HF Spaces).
+# Bind to $PORT when the platform injects one (Railway), else 7860 (image default).
 # Shell form so the var expands; exec so uvicorn is PID 1 and takes SIGTERM directly.
 EXPOSE 7860
 CMD exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-7860}

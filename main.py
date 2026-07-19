@@ -11,7 +11,7 @@ from pathlib import Path
 # BEFORE anything reads the environment, so `uvicorn main:app` picks the key up with no
 # exports, in any terminal, across restarts. Dev-only and optional: python-dotenv may be
 # absent (a minimal prod image) and there may be no .env - both are fine. Real env vars
-# always win: load_dotenv defaults to override=False, so a Space/Railway secret is never
+# always win: load_dotenv defaults to override=False, so a Railway secret is never
 # clobbered by a stray .env.
 try:
     from dotenv import load_dotenv
@@ -53,8 +53,8 @@ RESULTS_DIR = Path(tempfile.mkdtemp(prefix="gymtrainer-"))
 # In-memory job table. The upload returns a token the instant the file lands, and
 # the page polls /progress while the analysis runs in the background and reports
 # here. A dict, not a database, for the same reason RESULTS_DIR is a temp dir: the
-# result is disposable and there are no accounts. Pruned so a long-lived process on
-# Spaces doesn't slowly leak jobs and their rendered webms.
+# result is disposable and there are no accounts. Pruned so a long-lived server
+# process doesn't slowly leak jobs and their rendered webms.
 JOBS: dict = {}
 
 # At most this many clips render at once; later uploads wait in line as "Queued".
@@ -98,7 +98,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="AI Gym Trainer", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="trAIner", version="0.2.0", lifespan=lifespan)
 
 # The analysis API is intentionally anonymous and uses no cookies. Keep browser
 # access origin-scoped while making local Next.js development work out of the box.
@@ -127,7 +127,7 @@ def index():
 
 @app.get("/health")
 def health():
-    # Same facts as the boot banner. On Spaces this is your only window in.
+    # Same facts as the boot banner. On the hosted API this is your only window in.
     return {"status": "ok", "conf_min": CONF_MIN, "llm": llm_coach.info(), **get_backend().info()}
 
 

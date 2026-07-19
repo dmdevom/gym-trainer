@@ -16,6 +16,14 @@ export interface RepGrade {
   depth_pct: number;
   issues: string[];
   tags: string[];
+  // Display notes: flash_note is the terse one-line video overlay (the rep's top faults),
+  // coach_note a list of detail bullets for the table cell. Backend always sets both
+  // (deterministic, or LLM-authored when a key is present).
+  flash_note?: string;
+  coach_note?: string[];
+  // null for a counted rep; "under_extension"/"under_contraction" for a bad rep that
+  // was performed but not counted as full. Drives the "Incomplete" pill + stat averages.
+  reason?: string | null;
   start_t: number;
   end_t: number;
 }

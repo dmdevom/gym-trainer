@@ -1,13 +1,4 @@
----
-title: AI Gym Trainer
-emoji: 💪
-colorFrom: blue
-colorTo: green
-sdk: docker
-app_port: 7860
----
-
-# AI Gym Trainer
+# trAIner
 
 Upload *or record* a side-on set — single-arm bicep curl, barbell curl, or squat.
 Get your reps counted, each one graded for depth and tempo, and the whole analysis
@@ -16,12 +7,12 @@ range-of-motion gauge, a tempo bar, per-rep form notes, and an end card that sum
 up the set and says what to work on next.
 
 Built for the namastedev.com hackathon. Pose estimation via MediaPipe Tasks,
-served with FastAPI, a Next.js frontend in [`web/`](web/README.md), deployed on
-Hugging Face Spaces (Docker) and Railway.
+served with FastAPI, a Next.js frontend in [`web/`](web/README.md) deployed on
+Vercel, and a Dockerized API on Railway.
 
 **▶ Live demo:** https://gym-trainer-web-ai.vercel.app
 
-**API (+ built-in fallback UI):** https://huggingface.co/spaces/dmdev261/ai-gym-trainer
+**API (+ built-in fallback UI):** https://gym-trainer-production-3c7f.up.railway.app
 
 ## Try it
 
@@ -29,7 +20,7 @@ Open the [live demo](https://gym-trainer-web-ai.vercel.app): pick an exercise,
 try a bundled sample or **upload/record** a side-on clip, watch a real progress
 bar, then get the annotated video next to a per-rep table, the angle chart,
 form-check chips, and a coaching card ("what to work on next session"). The
-Space serves the same product through its built-in page. Or call the API
+API serves the same product through its built-in page. Or call it
 directly:
 
 ### API
@@ -44,8 +35,8 @@ directly:
   Starting → (Queued) → Analysing → Coaching → Generating → Done; the final
   response also carries the full summary below. `404` once the job expires (~1 h).
 - `GET /results/{token}` — the rendered, annotated `.webm`. Same ~1 h lifetime.
-- `GET /health` — backend, model and LLM status. On Spaces this is your only
-  window in.
+- `GET /health` — backend, model and LLM status. On the hosted API this is your
+  only window in.
 
 ### CLI (same pipeline, no server)
 
@@ -136,8 +127,8 @@ key is yours.
 ## Why MediaPipe and not YOLO
 
 Both backends sit behind one interface (`backends.py`), so this is measured, not
-a vibe. Same clip, same arm, both pinned to CPU — the deploy box (HF Spaces,
-2 vCPU) has no GPU — via `scripts/compare_backends.py`:
+a vibe. Same clip, same arm, both pinned to CPU — the 2-vCPU deploy box has
+no GPU — via `scripts/compare_backends.py`:
 
 | backend      | CPU latency  | per 300-frame request | first-frame warmup |
 | ------------ | ------------ | --------------------- | ------------------ |
@@ -147,8 +138,8 @@ a vibe. Same clip, same arm, both pinned to CPU — the deploy box (HF Spaces,
 MediaPipe is ~3× faster on the hardware that actually serves the request, and
 the two agree to a **median 5.2° (max 11°)** elbow angle across every shared
 frame — so on clean side-on input they tell the same story, and the choice is
-cost, not accuracy. YOLO also pulls in torch (~200–350 MB resident): fine on HF's
-16 GB, but it's exactly what rules YOLO out on a 512 MB tier. MediaPipe ships;
+cost, not accuracy. YOLO also pulls in torch (~200–350 MB resident): fine on a
+16 GB box, but it's exactly what rules YOLO out on a 512 MB tier. MediaPipe ships;
 YOLO stays opt-in behind `POSE_BACKEND=yolo`. Details in [LEARNINGS.md](LEARNINGS.md) #9 and #11.
 
 ## The web frontend (`web/`)
@@ -220,31 +211,20 @@ All optional — with nothing set, the app runs offline with rule-based coaching
 | `MAX_CONCURRENT_RENDERS` | `2` | Renders running at once; extra jobs wait as "Queued". |
 | `MAX_UPLOAD_MB` | `100` | Upload size cap. Buffered in RAM per upload — mind container memory. |
 | `CORS_ORIGINS` | localhost:3000 dev origins | Comma-separated frontend origins allowed to call the API. |
-| `PORT` | `7860` | Injected by Railway; HF Spaces uses `app_port` above. |
+| `PORT` | `7860` | Injected by Railway; the image falls back to 7860. |
 
 For local dev, `main.py` auto-loads a gitignored `.env` (template in
 `.env.example`); real environment variables always win over it.
 
 ## Deploying
 
-**Hugging Face Spaces (Docker).** The front-matter at the top of this README
-*is* the Space config. The build bakes the lite model into the image (Space disk
-isn't persistent, so runtime downloads would repeat on every cold start). Push
-the working tree with the CLI — **`hf upload` does not read `.gitignore`**, so
-keep the excludes:
+**Railway (Docker).** `railway up` from the repo root (`.railwayignore` keeps
+the build context lean). The build bakes the lite model into the image —
+container disks are ephemeral, so a runtime download would repeat on every
+restart. The container binds `$PORT` when the platform injects one, else 7860.
 
-```bash
-hf upload <account>/<space> . --repo-type space \
-  --exclude ".env" --exclude "data/*" --exclude "raw-docs/*" --exclude ".venv/*" \
-  --exclude "web/*" --exclude "node_modules/*" --exclude "out/*" --exclude "__pycache__/*"
-```
-
-**Railway.** `railway up` from the repo root (`.railwayignore` keeps the build
-context lean). The container binds `$PORT` when the platform injects one, else
-7860.
-
-**Secrets** (`OPENROUTER_API_KEY`) are platform env/secret variables in both
-cases — never in the repo, never baked into the image.
+**Secrets** (`OPENROUTER_API_KEY`) are platform env/secret variables on
+Railway — never in the repo, never baked into the image.
 
 **Frontend.** `web/` is deployed on Vercel at
 https://gym-trainer-web-ai.vercel.app with `BACKEND_API_URL` pointed at the

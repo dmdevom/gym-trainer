@@ -41,17 +41,30 @@ TEMPO_MIN_S = 1.2    # a cycle faster than this was swung, not lifted. Same rule
                      # controlled curl-and-lower runs 2-3 s; under ~1 s the weight
                      # is riding momentum and the depth number flatters you.
 
+# --- Partial ("bad rep") detection ---------------------------------------
+# The smallest peak-to-valley swing that counts as a real attempt (not sensor
+# noise). Dead-zone jitter is ~10 deg (see the hysteresis noise test); a genuine
+# curl, even a shallow one, moves 40 deg+. 30 deg sits cleanly between the two, so
+# a real half-rep is recorded as a bad rep while noise stays ignored.
+PARTIAL_MIN_AMPLITUDE = 30.0
+
 
 @dataclass
 class Rep:
-    """One detected cycle: bent, then straightened."""
+    """One detected cycle: bent, then straightened.
+
+    `reason` is None for a real, completed cycle (what find_reps returns). find_partials
+    sets it to "under_extension" or "under_contraction" for an attempt that did NOT
+    complete a valid cycle - the lifter moved, but the rep wasn't counted. Grading treats
+    a reason'd rep as a "bad rep": counted in the total, never full."""
     start_idx: int      # frame index where the arm entered the bend
     end_idx: int        # frame index where it came back to straight
     min_angle: float    # deepest point reached during the cycle
+    reason: Optional[str] = None   # None = completed; else why it wasn't a full rep
 
     @property
     def full(self) -> bool:
-        return self.min_angle <= FULL_ROM
+        return self.reason is None and self.min_angle <= FULL_ROM
 
 
 def find_reps(
@@ -108,6 +121,87 @@ def find_reps(
     return reps
 
 
+# --- Partial detection: the reps find_reps deliberately doesn't count ------
+# find_reps counts a cycle only when it CLOSES (bent past up_enter, straightened
+# past down_enter). Two honest efforts slip through that gate and vanish:
+#   - under-extension: curled fine, never straightened back -> the cycle never closes.
+#   - under-contraction: bent a little, never past up_enter -> the cycle never opens.
+# The lifter did something and got no credit and no reason why. find_partials finds
+# exactly those attempts so they can be shown as "bad reps" - counted in the total,
+# never full. find_reps is untouched; this reads the same series a second way.
+
+def _extrema(angles: Sequence[Optional[float]], min_swing: float) -> List[tuple]:
+    """Alternating turning points (idx, value, "max"|"min") where each swing is at
+    least `min_swing`. A prominence/zigzag filter: track the running high and low since
+    the last committed pivot; when the series retraces `min_swing` off one of them,
+    commit that extreme and flip direction. None samples are skipped - blind, not a
+    reset, the same rule find_reps uses - so a dropout can't fake a turning point."""
+    pts = [(i, a) for i, a in enumerate(angles) if a is not None]
+    if len(pts) < 2:
+        return []
+    out: List[tuple] = []
+    hi_i, hi_v = pts[0]
+    lo_i, lo_v = pts[0]
+    trend = 0                      # +1 = rising leg, -1 = falling leg, 0 = not yet moving
+    for i, v in pts[1:]:
+        if v > hi_v:
+            hi_i, hi_v = i, v
+        if v < lo_v:
+            lo_i, lo_v = i, v
+        if trend >= 0 and hi_v - v >= min_swing:
+            out.append((hi_i, hi_v, "max"))     # was rising; dropped off the high -> a peak
+            trend, lo_i, lo_v = -1, i, v
+        elif trend <= 0 and v - lo_v >= min_swing:
+            out.append((lo_i, lo_v, "min"))      # was falling; rose off the low -> a valley
+            trend, hi_i, hi_v = 1, i, v
+    if trend > 0:                  # close the final leg on its running extreme
+        out.append((hi_i, hi_v, "max"))
+    elif trend < 0:
+        out.append((lo_i, lo_v, "min"))
+    return out
+
+
+def find_partials(
+    angles: Sequence[Optional[float]],
+    up_enter: float = UP_ENTER,
+    down_enter: float = DOWN_ENTER,
+    min_amplitude: float = PARTIAL_MIN_AMPLITUDE,
+) -> List[Rep]:
+    """Attempts that moved but never became a counted rep, each tagged with why.
+
+    Returns Reps with `reason` set. A valley (curl bottom) is classified by whether the
+    arm came back up afterwards (a recovery peak) and how far:
+      - crossed up_enter AND recovered past down_enter -> a real rep (find_reps has it): skip.
+      - crossed up_enter, recovered but short of down_enter -> under_extension.
+      - never crossed up_enter (but did move ≥ min_amplitude) -> under_contraction.
+    A valley with NO recovery peak - the clip ended mid-dip - is left alone: we can't tell
+    a cut-off rep from a failed one, so we don't presume a fault (the same call find_reps
+    makes for an unclosed cycle). Anything overlapping a find_reps window is dropped, so a
+    counted rep can never also be reported as a bad rep."""
+    ext = _extrema(angles, min_amplitude)
+    counted = find_reps(angles, up_enter, down_enter)
+    partials: List[Rep] = []
+    for k, (idx, val, kind) in enumerate(ext):
+        if kind != "min":
+            continue
+        following = ext[k + 1] if k + 1 < len(ext) else None   # the recovery peak, if any
+        if following is None:
+            continue                                            # clip ended mid-dip: don't presume
+        crossed_up = val < up_enter
+        if crossed_up and following[1] > down_enter:
+            continue                                            # a completed rep; find_reps owns it
+        reason = "under_extension" if crossed_up else "under_contraction"
+        preceding = ext[k - 1] if k - 1 >= 0 else None          # the top the descent began from
+        start_idx = preceding[0] if preceding is not None else idx
+        end_idx = following[0]
+        # Strict interior overlap only: a bad rep may SHARE the peak that ends a counted
+        # rep (that peak is the top it descends from) - it just can't sit inside one.
+        if any(start_idx < r.end_idx and end_idx > r.start_idx for r in counted):
+            continue                                            # inside a counted rep's window
+        partials.append(Rep(start_idx, end_idx, val, reason=reason))
+    return partials
+
+
 # =========================================================================
 # GRADING - layer 2. The cycle exists; now judge how it was performed.
 # Kept deliberately downstream of find_reps (see the module docstring): the
@@ -126,10 +220,26 @@ class RepGrade:
     tags: List[str] = field(default_factory=list)   # short codes ("shallow", "rushed")
                              # the same verdict as `issues`, but for colouring the
                              # video overlay and table without re-parsing English
+    flash: str = ""          # short one-line overlay flash: the terse lead cause, number-free
+                             # and without the "Rep N:" prefix (render adds it). The
+                             # deterministic fallback when the LLM path is off.
 
     @property
     def clean(self) -> bool:
         return not self.issues
+
+
+def _join_faults(labels: List[str]) -> str:
+    """Join up to the top 3 fault labels into one video-flash phrase: the first capitalised,
+    the rest lower-cased, an Oxford 'and' before the last. 'Swinging the torso', 'elbow
+    drifting forward', 'rushed' -> 'Swinging the torso, elbow drifting forward, and rushed'."""
+    labels = labels[:3]
+    parts = [labels[0][:1].upper() + labels[0][1:]] + [l[:1].lower() + l[1:] for l in labels[1:]]
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return f"{parts[0]}, {parts[1]}, and {parts[2]}"
 
 
 def form_feedback(
@@ -154,7 +264,7 @@ def form_feedback(
     `checks_per_rep`, when supplied, is evaluate_checks()'s whole-body verdict for
     each rep in the same order - torso lean, elbow drift, and so on. Its flagged
     issues lead the list, because posture/safety outranks depth and tempo in what to
-    fix next, and because the on-video flash shows issues[0]. Leave it None (the
+    fix next, and because the on-video flash leads with them. Leave it None (the
     default) and this behaves exactly as it did before form checks existed - which is
     what keeps the nine find_reps tests and the curl grades unchanged.
 
@@ -169,39 +279,89 @@ def form_feedback(
     vtx = exercise.vertex_name
     span = max(1.0, down - full_rom)   # the arc a "full" rep is expected to cover
 
+    up = exercise.up_enter
+
     grades: List[RepGrade] = []
     for n, rep in enumerate(reps, start=1):
         duration = times[rep.end_idx] - times[rep.start_idx]
-        is_full = rep.min_angle <= full_rom
+        # A bad rep (reason set) is never full - it didn't complete a valid cycle - even
+        # if it went deep. It's counted in the total, but full_reps excludes it.
+        is_full = rep.reason is None and rep.min_angle <= full_rom
         # 100% once the joint reaches full_rom; linear back down to 0 at the top of
         # the movement. Capped, so going deeper than full range still reads as 100.
         depth_pct = max(0.0, min(100.0, (down - rep.min_angle) / span * 100.0))
 
         issues: List[str] = []
         tags: List[str] = []
+        posture_flash: List[tuple] = []   # (severity, terse fault) per flagged form check,
+                                          # used only to order the video flash worst-first
 
-        # Posture/safety first: a flagged form check leads the rep's issues, so it's
-        # what the on-video flash surfaces and what coaching prioritises fixing.
+        # A bad rep leads with WHY it wasn't counted - that's the one thing the lifter
+        # needs. The redundant shallow/rushed depth/tempo tags are skipped for it (the
+        # reason already says the range was incomplete), but posture checks still run.
+        if rep.reason == "under_extension":
+            issues.append(
+                f"Not counted as a full rep - {vtx} curled to {rep.min_angle:.0f} deg but "
+                f"didn't straighten back past {down:.0f} deg before the next rep. Extend all "
+                f"the way between reps so it counts."
+            )
+            tags.append("under_extension")
+        elif rep.reason == "under_contraction":
+            issues.append(
+                f"Not counted - {vtx} only bent to {rep.min_angle:.0f} deg; a rep has to pass "
+                f"{up:.0f} deg to count. {exercise.depth_cue}"
+            )
+            tags.append("under_contraction")
+
+        # Posture/safety: a flagged form check is added next (it leads for a clean rep and
+        # rides just under the incompleteness line for a bad one). This is what the on-video
+        # flash surfaces (issues[0]) and what coaching prioritises fixing.
         if checks_per_rep is not None:
             for cr in checks_per_rep[n - 1]:
                 if cr.status == "flag":
                     issues.append(cr.issue)
                     tags.append(cr.key)
+                    posture_flash.append((cr.severity, cr.fault))
 
-        if not is_full:
-            issues.append(
-                f"Shallow - {vtx} stopped at {rep.min_angle:.0f} deg, short of the "
-                f"{full_rom:.0f} deg that counts as full range. {exercise.depth_cue}"
-            )
-            tags.append("shallow")
-        if duration < tempo_min_s:
-            issues.append(
-                f"Rushed - {duration:.1f}s for the rep; controlled is >= "
-                f"{tempo_min_s:.1f}s. {exercise.tempo_cue}"
-            )
-            tags.append("rushed")
+        if rep.reason is None:
+            if not is_full:
+                issues.append(
+                    f"Shallow - {vtx} stopped at {rep.min_angle:.0f} deg, short of the "
+                    f"{full_rom:.0f} deg that counts as full range. {exercise.depth_cue}"
+                )
+                tags.append("shallow")
+            if duration < tempo_min_s:
+                issues.append(
+                    f"Rushed - {duration:.1f}s for the rep; controlled is >= "
+                    f"{tempo_min_s:.1f}s. {exercise.tempo_cue}"
+                )
+                tags.append("rushed")
 
-        grades.append(RepGrade(n, rep.min_angle, duration, is_full, issues, round(depth_pct), tags))
+        # The one-line flash: the rep's top faults, worst-first, read in a glance. Each fault
+        # contributes (single_phrase, join_label) - the hand-tuned phrase used when it is the
+        # ONLY fault, or the terse label used when several are joined. Order mirrors the issues
+        # list (not-counted reason, posture worst-first by severity, depth, tempo); the flash
+        # shows the top 3, and the full list still lands in the coach note.
+        elements: List[tuple] = []
+        if rep.reason == "under_extension":
+            elements.append(("Not counted - didn't fully extend", "Not counted - didn't fully extend"))
+        elif rep.reason == "under_contraction":
+            elements.append(("Not counted - didn't bend far enough", "Not counted - didn't bend far enough"))
+        for _sev, fault in sorted(posture_flash, key=lambda pf: pf[0], reverse=True):
+            elements.append((fault, fault))
+        if "shallow" in tags:
+            elements.append(("Shallow - short of full depth", "short of full depth"))
+        if "rushed" in tags:
+            elements.append(("Rushed - control the lowering", "rushed"))
+
+        if not elements:
+            flash = "Clean - full range, controlled."
+        elif len(elements) == 1:
+            flash = elements[0][0]
+        else:
+            flash = _join_faults([e[1] for e in elements])
+
+        grades.append(RepGrade(n, rep.min_angle, duration, is_full, issues, round(depth_pct), tags, flash))
     return grades
 
 
@@ -228,6 +388,10 @@ class CheckResult:
     status: str                    # "ok" | "flag" | "skip"
     value: Optional[float] = None  # the reduced measurement, degrees (None when skipped)
     issue: str = ""                # human line; populated only when status == "flag"
+    fault: str = ""                # terse phrase for the overlay flash ("Elbow drifting
+                                   # forward"); populated only when status == "flag"
+    severity: float = 0.0          # how far past the limit as a ratio (>= 1, bigger = worse);
+                                   # populated only when status == "flag", orders the flash
 
 
 def _vertical_dev(p0, p1) -> float:
@@ -318,7 +482,14 @@ def evaluate_checks(
         flagged = value > chk.limit if chk.compare == "over" else value < chk.limit
         if flagged:
             issue = f"{chk.fault} ({value:.0f} deg). {chk.cue}"
-            results.append(CheckResult(chk.key, chk.label, "flag", round(value, 1), issue))
+            # Severity as a >= 1 ratio, direction-aware, so the flash can lead with the worst
+            # fault whether the check trips going over its limit (drift, swing) or under it
+            # (legs bending, heels lifting).
+            if chk.compare == "over":
+                severity = value / chk.limit if chk.limit else 0.0
+            else:
+                severity = chk.limit / value if value else 0.0
+            results.append(CheckResult(chk.key, chk.label, "flag", round(value, 1), issue, chk.fault, severity))
         else:
             results.append(CheckResult(chk.key, chk.label, "ok", round(value, 1)))
     return results
@@ -393,6 +564,36 @@ def run_tests() -> bool:
     results.append(_check("empty series -> 0", len(find_reps([])), 0))
     results.append(_check("all dropped -> 0", len(find_reps([None] * 20)), 0))
 
+    # --- PARTIALS (find_partials). The attempts find_reps deliberately drops, now
+    #     surfaced as "bad reps" so the lifter learns WHY a rep didn't count. Detection
+    #     stays permissive-but-not-noisy: a real half-rep is caught, dead-zone jitter isn't.
+    # Under-extension: curled deep (50), came back up but only to 120 - short of the 150
+    # that closes a rep. find_reps counts 0, find_partials records one and says why.
+    ue = find_partials([170.0, 50.0, 120.0])
+    results.append(_check("under-extension -> 1 partial", len(ue), 1))
+    results.append(_check("under-extension -> tagged", ue[0].reason if ue else None, "under_extension"))
+
+    # A curl that the clip cuts off mid-lift (no recovery seen) is NOT flagged - it might
+    # just be a truncated recording, exactly what find_reps assumes.
+    results.append(_check("clip ends mid-dip -> 0 partials", len(find_partials([170.0, 130.0, 40.0])), 0))
+
+    # Under-contraction: a real 55-degree dip that never reaches the bend gate. Invisible
+    # to find_reps; recorded here.
+    uc = find_partials([170.0, 140.0, 115.0, 140.0, 170.0])
+    results.append(_check("under-contraction -> 1 partial", len(uc), 1))
+    results.append(_check("under-contraction -> tagged", uc[0].reason if uc else None, "under_contraction"))
+
+    # A clean rep is a COUNTED rep, never a partial - the demo sets must stay unflagged.
+    results.append(_check("clean rep -> 0 partials", len(find_partials(_clean_rep())), 0))
+    # Dead-zone noise (the same signal as test 2) is below the amplitude gate: not a rep,
+    # not a bad rep, nothing.
+    results.append(_check("dead-zone noise -> 0 partials", len(find_partials(noise)), 0))
+    # Mixed: one clean rep, then a curl that comes back up short (to 120) instead of
+    # straightening. 1 counted + 1 bad, and they don't step on each other.
+    mixed_p = _clean_rep() + [130.0, 40.0, 120.0]
+    results.append(_check("clean + short-return -> 1 counted", len(find_reps(mixed_p)), 1))
+    results.append(_check("clean + short-return -> 1 partial", len(find_partials(mixed_p)), 1))
+
     # --- GRADING layer (form_feedback). Detection above, judgement here. ------
     # A concrete exercise supplies the thresholds now; clone the shipped curl with
     # an explicit tempo so these tests don't move if that default is ever calibrated.
@@ -404,17 +605,31 @@ def run_tests() -> bool:
     clean_t = [i * 0.25 for i in range(9)]            # the rep spans ~1.25 s
     g = form_feedback(find_reps(_clean_rep()), clean_t, ex)
     results.append(_check("clean rep -> full, no issues", (g[0].full, g[0].tags), (True, [])))
+    results.append(_check("clean rep -> clean flash", g[0].flash, "Clean - full range, controlled."))
 
     # A 92-degree rep IS a rep (detection is permissive) but grades shallow.
     partial_t = [i * 0.7 for i in range(5)]
     g = form_feedback(find_reps([170.0, 130.0, 92.0, 130.0, 170.0]), partial_t, ex)
     results.append(_check("92-degree rep -> not full", g[0].full, False))
     results.append(_check("92-degree rep -> tagged shallow", "shallow" in g[0].tags, True))
+    results.append(_check("shallow rep -> shallow flash", g[0].flash, "Shallow - short of full depth"))
 
     # The same deep rep, crammed into 0.4 s, is a swing.
     fast_t = [i * 0.05 for i in range(9)]
     g = form_feedback(find_reps(_clean_rep()), fast_t, ex)
     results.append(_check("rushed rep -> tagged rushed", "rushed" in g[0].tags, True))
+    results.append(_check("rushed rep -> rushed flash", g[0].flash, "Rushed - control the lowering"))
+
+    # A bad rep (reason set) grades not-full and carries ONLY its reason tag - no shallow/
+    # rushed noise on top - so the table and the flash say one clear thing.
+    bad = form_feedback([Rep(0, 2, 120.0, reason="under_contraction")], [0.0, 0.5, 1.0], ex)
+    results.append(_check("bad rep -> not full", bad[0].full, False))
+    results.append(_check("bad rep -> reason tag only", bad[0].tags, ["under_contraction"]))
+    results.append(_check("under-contraction -> not-counted flash", bad[0].flash,
+                          "Not counted - didn't bend far enough"))
+    bad_ue = form_feedback([Rep(0, 2, 60.0, reason="under_extension")], [0.0, 0.5, 1.0], ex)
+    results.append(_check("under-extension -> not-counted flash", bad_ue[0].flash,
+                          "Not counted - didn't fully extend"))
 
     # --- FORM CHECKS (evaluate_checks). Synthetic landmark maps, no video needed. ---
     # These are the spec for the "look at the whole body" layer the same way the
@@ -467,6 +682,25 @@ def run_tests() -> bool:
     graded = form_feedback([rep5], [i * 0.4 for i in range(5)], BICEP_CURL,
                            [evaluate_checks(rep5, drift, ang5, "left", BICEP_CURL)])
     results.append(_check("form flag -> tagged on the rep", "elbow" in graded[0].tags, True))
+    results.append(_check("form flag -> fault flash", graded[0].flash, "Elbow drifting forward"))
+
+    # Multiple faults on ONE rep: the flash lists the top 3, worst posture first (by severity),
+    # then tempo. The full detail still goes to issues/the coach note; the flash is the glance.
+    multi = [[
+        CheckResult("elbow", "Elbow pinned", "flag", 60.0, "e", "Elbow drifting forward", 1.5),
+        CheckResult("swing", "No body swing", "flag", 28.0, "s", "Swinging the torso", 3.1),
+    ]]
+    gm = form_feedback([Rep(0, 4, 40.0)], [0.0, 0.1, 0.2, 0.3, 0.4], ex, multi)   # full but rushed
+    results.append(_check("multi-fault -> top-3, worst posture first",
+                          gm[0].flash, "Swinging the torso, elbow drifting forward, and rushed"))
+    two = [[CheckResult("swing", "No body swing", "flag", 20.0, "s", "Swinging the torso", 2.2)]]
+    g2 = form_feedback([Rep(0, 4, 40.0)], [0.0, 0.05, 0.1, 0.15, 0.2], ex, two)   # swing + rushed
+    results.append(_check("two faults -> 'A and B' (no Oxford comma)",
+                          g2[0].flash, "Swinging the torso and rushed"))
+    gue = form_feedback([Rep(0, 2, 60.0, reason="under_extension")], [0.0, 0.5, 1.0], ex,
+                        [[CheckResult("swing", "No body swing", "flag", 15.0, "s", "Swinging the torso", 1.7)]])
+    results.append(_check("bad rep + posture -> reason leads the flash",
+                          gue[0].flash, "Not counted - didn't fully extend and swinging the torso"))
 
     return all(results)
 

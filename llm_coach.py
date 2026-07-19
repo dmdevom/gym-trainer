@@ -29,10 +29,10 @@ Two things the model is NOT trusted with, on purpose:
 
 We reach the model through OpenRouter (one key, the whole catalogue) using the
 OpenAI-compatible wire format - so the SDK is `openai`, just pointed at OpenRouter's
-base URL. A public Space runs on our key, so the default is a cheap, reliable model;
-the numbers are already measured, the model only writes three short prose fields.
+base URL. A public deployment runs on our key, so the default is a cheap, reliable
+model; the numbers are already measured, the model only writes three short prose fields.
 
-Config, all via env so the Space/Railway secret is the only switch:
+Config, all via env so the Railway secret is the only switch:
   OPENROUTER_API_KEY      the key. Absent -> feature off, rules used.
   LLM_COACH               force on/off (1/0). Default: on iff a key is present.
   LLM_MODEL               override the model (vendor/model). Default
@@ -67,11 +67,11 @@ except ImportError:  # pragma: no cover - exercised only where the dep is absent
     openai = None  # type: ignore[assignment]
 
 # uvicorn owns logging in the deployed app; borrow its logger so a fallback is
-# visible in the Space logs (the one window in). Under the CLI it just no-ops up to
+# visible in the server logs (the one window in). Under the CLI it just no-ops up to
 # root at WARNING, which is fine - the fallback is silent-by-design either way.
 log = logging.getLogger("uvicorn.error")
 
-# OpenRouter model id (vendor/model). A public Space runs on our key, so the default
+# OpenRouter model id (vendor/model). A public deployment runs on our key, so the default
 # is a cheap, fast model - plenty for a 3-field coaching blurb, and it must answer
 # INSIDE the _TIMEOUT_S window this call sits behind. Do NOT use a reasoning model
 # here: gpt-5-nano burns the entire token budget on hidden reasoning (1500+ tokens ->
@@ -87,7 +87,17 @@ log = logging.getLogger("uvicorn.error")
 DEFAULT_MODEL = "google/gemini-2.5-flash-lite"
 _BASE_URL = "https://openrouter.ai/api/v1"
 _TIMEOUT_S = 15.0
-_MAX_TOKENS = 1500
+_MAX_TOKENS = 3000   # room for per-rep notes on a long set; a fast non-reasoning model
+                     # streams this inside _TIMEOUT_S, and a truncated reply just fails
+                     # validation and falls back to the deterministic notes
+
+# Per-rep note length caps, enforced by _validate_rep_notes. The flash names the rep's top
+# faults on the video overlay, so it stays short (a few phrases on <= a couple of lines); the
+# coach note is a bulleted detail cell in the table - generous but bounded. Over any cap -> ALL
+# LLM rep-notes are dropped and the deterministic notes (already tuned to fit) take over.
+FLASH_MAX_CHARS = 100
+COACH_MAX_CHARS = 500        # total characters across one rep's bullets
+COACH_MAX_BULLETS = 6
 
 # The client is built once and reused. Timeout and retries are deliberately tight:
 # this call sits in the request path behind a progress bar, so it must fail FAST to
@@ -103,6 +113,16 @@ _calls: List[float] = []
 _calls_lock = threading.Lock()
 
 
+class _RepNote(BaseModel):
+    """The model's notes for one rep: `flash` is the one-line video overlay (the rep's top
+    faults), `coach` a list of detailed bullet points for the table cell. `number` keys it
+    back to the graded rep. Validated (coverage + length) by _validate_rep_notes."""
+
+    number: int
+    flash: str
+    coach: List[str]
+
+
 class _Coaching(BaseModel):
     """Exactly the prose we trust the model to write. Numbers stay out; the
     standing cues (keep_in_mind, muscle) are injected from the Exercise afterward.
@@ -114,6 +134,9 @@ class _Coaching(BaseModel):
     session_story: str
     mental_cue: str = ""   # additive: one physical cue for the next set. Defaulted so a
                            # model that omits it still yields a usable card, not a fallback.
+    rep_notes: List[_RepNote] = []   # additive: per-rep flash+coach text. Empty or invalid ->
+                                     # per-rep notes fall back to the deterministic grader text,
+                                     # independently of the card fields above.
 
 
 _SYSTEM = """\
@@ -131,13 +154,16 @@ Hard rules:
 - Pick ONE focus: the single most valuable thing to fix next. Prioritise in this
   order: safety/posture, then range of motion (depth), then tempo, then adding
   load. If every rep was full and controlled, the focus is progressive overload.
-- Each rep's "faults" list holds short tags. "shallow"/"rushed" are depth/tempo;
-  any other tag is a form/posture fault, and "form_checks" (when present) names what
-  each watched and how many reps it caught - a flagged one is a safety/posture issue
-  and outranks depth and tempo. Only assessed checks are sent; don't coach on a check
-  that isn't there (it just wasn't in frame).
-- Do NOT invent faults. A rep with no "shallow"/"rushed"/form tag was clean - full
-  range and controlled. Natural variation in the raw numbers is NOT a fault: a rep at
+- Each rep's "faults" list holds short tags. "shallow"/"rushed" are depth/tempo.
+  "under_extension"/"under_contraction" mark a rep the lifter DID perform but that was
+  NOT counted as a full rep - they didn't straighten back out (extension) or didn't bend
+  far enough (contraction). Such a rep has "full_range": false; the fix is completing the
+  whole range so it counts, and that is more basic than depth or tempo. Any OTHER tag is a
+  form/posture fault, and "form_checks" (when present) names what each watched and how many
+  reps it caught - a flagged one is a safety/posture issue and outranks the rest. Only
+  assessed checks are sent; don't coach on a check that isn't there (it just wasn't in frame).
+- Do NOT invent faults. A rep with an empty "faults" list was clean - full range and
+  controlled. Natural variation in the raw numbers is NOT a fault: a rep at
   or above min_controlled_tempo_s is controlled even if it's a little faster than
   another, and a rep marked full_range covered the range even if a touch shallower than
   its neighbour - never flag these or make them the focus. The set carries a boolean
@@ -165,10 +191,28 @@ Return:
   across the reps (e.g. strong then fading), what stood out. Honest, conversational.
 - mental_cue: 3-6 words, ONE physical thing to hold in mind during the next set - a
   cue they can feel, not a topic. "Pin the elbow, own the lower", not "form".
+- rep_notes: an array with ONE object per rep in "per_rep", each
+  {"number": <the rep's number>, "flash": <string>, "coach": <array of strings>}:
+    * flash: a SHORT PHRASE naming that rep's TOP 3 FAULTS, most serious first, joined
+      naturally - e.g. "Swinging the torso, elbow drifting forward, and rushed". If the rep has
+      fewer than 3 faults, name only those; if it is clean, a short positive phrase like
+      "Clean - full range and controlled". Name each fault in a couple of words, in the voice of
+      "Elbow drifting forward" / "Swinging the torso" / "short of full depth" / "rushed" - never
+      a single bare word on its own. It is ONE line over the video: no numbers, no "Rep N".
+    * coach: an ARRAY of 2-5 short BULLET POINTS - a detailed, scannable read of that rep's
+      form. One bullet per fault (grounded in the rep's own faults and the exercise's
+      depth_cue/tempo_cue, thorough and concrete), plus one bullet on what went well. The SAME
+      no-numbers rule applies (the table already shows this rep's angle/depth/tempo beside your
+      note). A rep with an empty faults list is clean: say briefly what was good, never invent a
+      fault. Each bullet is a short phrase or sentence, with no leading "-" or "*".
+    Give every rep a note. For a rep whose faults include "under_extension" or
+    "under_contraction", keep its flash to the fact that it wasn't counted - those reps are
+    handled separately, so you don't need to detail them.
 
 Respond with ONLY a JSON object (no markdown, no code fence) with exactly these keys:
   "focus" (string), "next_session" (array of strings), "session_story" (string),
-  "mental_cue" (string).
+  "mental_cue" (string), "rep_notes" (array of {number, flash, coach} objects, where "coach"
+  is an array of strings).
 """
 
 
@@ -191,7 +235,7 @@ def is_enabled() -> bool:
 
 
 def info() -> dict:
-    """What /health reports, so the Space can tell at a glance whether the LLM path
+    """What /health reports, so you can tell at a glance whether the LLM path
     is live and which model it would use."""
     on = is_enabled()
     return {"enabled": on, "model": _model() if on else None}
@@ -214,7 +258,7 @@ def _get_client():
 
 
 def _rate_ok() -> bool:
-    """True if we're under the hourly cap (and records this call). A public Space on
+    """True if we're under the hourly cap (and records this call). A public endpoint on
     our key is the threat model; this keeps a bad afternoon from becoming a bill."""
     limit = int(os.environ.get("LLM_MAX_CALLS_PER_HOUR", "60"))
     if limit <= 0:
@@ -358,6 +402,36 @@ def _payload(exercise, per_rep: Sequence[dict], reps: int, full_reps: int, verdi
     return payload
 
 
+def _validate_rep_notes(per_rep: Sequence[dict], notes: Sequence["_RepNote"]) -> List[dict]:
+    """All-or-nothing gate on the model's per-rep notes. Return a clean list of
+    {number, flash, coach} dicts (coach a list of bullets) ONLY if every gradeable rep
+    (`reason is None`) has exactly one note, its flash non-empty within the char cap and its
+    coach a non-empty bullet list within the bullet/char caps. Any miss returns [] so the
+    caller uses the deterministic notes for the WHOLE video - never a half-LLM, half-rules mix.
+
+    Notes for reason-tagged (bad) reps, or for unknown numbers, are ignored: bad reps stay
+    deterministic by design, so the model's coverage only has to reach the gradeable reps."""
+    need = {r["number"] for r in per_rep if r.get("reason") is None}
+    by_num: dict = {}
+    for note in notes:
+        if note.number not in need:          # bad-rep or stray note -> not our concern
+            continue
+        if note.number in by_num:            # two notes for one rep -> ambiguous -> bail
+            return []
+        flash = (note.flash or "").strip()
+        if not flash or len(flash) > FLASH_MAX_CHARS:
+            return []
+        bullets = [b.strip() for b in (note.coach or []) if b and b.strip()]
+        if not bullets or len(bullets) > COACH_MAX_BULLETS:
+            return []
+        if sum(len(b) for b in bullets) > COACH_MAX_CHARS:
+            return []
+        by_num[note.number] = {"number": note.number, "flash": flash, "coach": bullets}
+    if set(by_num) != need:                  # a gradeable rep went un-noted -> bail
+        return []
+    return [by_num[n] for n in sorted(by_num)]
+
+
 def generate(
     exercise,
     per_rep: Sequence[dict],
@@ -431,11 +505,14 @@ def generate(
             "muscle": exercise.muscle,
             "session_story": c.session_story.strip(),
             "mental_cue": c.mental_cue.strip(),
+            # Per-rep notes, gated all-or-nothing. [] when absent/malformed/over-length ->
+            # the caller keeps the deterministic per-rep notes (independent of the card above).
+            "rep_notes": _validate_rep_notes(per_rep, c.rep_notes),
         }
     except Exception as e:
         # ANY failure - bad key, network, rate limit, refusal, schema mismatch, an
         # SDK surprise - is the same decision: quietly use the rules. exc_info so the
-        # reason is in the Space logs without ever reaching the user.
+        # reason is in the server logs without ever reaching the user.
         record["error"] = repr(e)
         log.warning("llm coaching failed; using rule-based fallback", exc_info=True)
         return None
@@ -444,3 +521,50 @@ def generate(
         # (success, empty reply, or error) for inspection. A no-op otherwise.
         record["latency_s"] = round(time.time() - t0, 2)
         _debug_log(record)
+
+
+if __name__ == "__main__":
+    # Offline spec for the all-or-nothing per-rep-note gate. No network: feed
+    # _validate_rep_notes hand-built notes and assert the fallback decision.
+    from types import SimpleNamespace as _NS
+
+    def _note(number, flash="tidy rep", coach=None):
+        return _NS(number=number, flash=flash,
+                   coach=["Strong, full-range rep.", "Keep it here."] if coach is None else coach)
+
+    _per_rep = [
+        {"number": 1, "reason": None},
+        {"number": 2, "reason": None},
+        {"number": 3, "reason": "under_extension"},   # bad rep: not required, ignored
+    ]
+    _ok = True
+
+    def _check(name, got, want):
+        global _ok
+        good = got == want
+        _ok = _ok and good
+        print(f"  {'PASS' if good else 'FAIL'}  {name}")
+        if not good:
+            print(f"        got  {got!r}\n        want {want!r}")
+
+    # Full valid coverage of the two gradeable reps (a stray note for the bad rep is tolerated).
+    _v = _validate_rep_notes(_per_rep, [_note(1), _note(2), _note(3, coach=["ignored"])])
+    _check("valid -> notes for gradeable reps", [d["number"] for d in _v], [1, 2])
+    _check("valid -> coach is a bullet list", _v[0]["coach"], ["Strong, full-range rep.", "Keep it here."])
+    _check("missing a gradeable rep -> []", _validate_rep_notes(_per_rep, [_note(1)]), [])
+    _check("over-length flash -> []",
+           _validate_rep_notes(_per_rep, [_note(1, flash="x" * (FLASH_MAX_CHARS + 1)), _note(2)]), [])
+    _check("too many coach bullets -> []",
+           _validate_rep_notes(_per_rep, [_note(1, coach=["b"] * (COACH_MAX_BULLETS + 1)), _note(2)]), [])
+    _check("over-length coach -> []",
+           _validate_rep_notes(_per_rep, [_note(1, coach=["x" * (COACH_MAX_CHARS + 1)]), _note(2)]), [])
+    _check("empty coach list -> []", _validate_rep_notes(_per_rep, [_note(1, coach=[]), _note(2)]), [])
+    _check("blank coach bullets -> []", _validate_rep_notes(_per_rep, [_note(1, coach=["  ", ""]), _note(2)]), [])
+    _check("empty flash -> []", _validate_rep_notes(_per_rep, [_note(1, flash="   "), _note(2)]), [])
+    _check("duplicate note for one rep -> []",
+           _validate_rep_notes(_per_rep, [_note(1), _note(1), _note(2)]), [])
+    _check("no gradeable reps -> [] (all bad reps stay deterministic)",
+           _validate_rep_notes([{"number": 1, "reason": "under_extension"}], [_note(1)]), [])
+
+    print("llm_coach.py")
+    print("all passed" if _ok else "\nnot yet - a fallback decision is wrong.")

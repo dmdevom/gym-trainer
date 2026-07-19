@@ -73,7 +73,9 @@ export function validateVideo(file: File): string | null {
 }
 
 export function deriveStats(result: AnalysisResult) {
-  const reps = result.per_rep;
+  // Average depth/tempo over COUNTED reps only — a bad rep (reason set) is a partial
+  // movement, so its numbers would skew the set's averages.
+  const reps = result.per_rep.filter((rep) => !rep.reason);
   return {
     averageDepth: reps.length ? Math.round(reps.reduce((sum, rep) => sum + rep.depth_pct, 0) / reps.length) : null,
     averageTempo: reps.length ? reps.reduce((sum, rep) => sum + rep.duration_s, 0) / reps.length : null,

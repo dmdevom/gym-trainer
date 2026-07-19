@@ -144,7 +144,7 @@ Render's free tier is 512MB — and so is the $7 Starter tier. `import torch`
 alone is 200–350MB resident, so YOLO was never fitting in either. The first
 Render tier that runs it is $25/mo.
 
-Hugging Face Spaces free: **2 vCPU, 16GB**. Render's $85/mo Pro tier, for zero.
+The free tier we deployed on: **2 vCPU, 16GB**. Render's $85/mo Pro tier, for zero.
 
 But the number that actually mattered wasn't RAM:
 
@@ -240,7 +240,7 @@ could contradict. Sparse for the truth, dense only for the picture.
 
 ## 14. The library grew a system dependency and only the deploy noticed
 
-The Space built clean, then died on boot:
+The image built clean, then the container died on boot:
 
 ```
 OSError: libGLESv2.so.2: cannot open shared object file: No such file or directory
@@ -307,7 +307,7 @@ Two things that could have bitten and didn't: the callback fires from the
 threadpool worker (annotate_video is sync, off the event loop) and just writes two
 ints into a dict — safe enough under the GIL for a status line, no lock. And I
 polled instead of Server-Sent Events on purpose: SSE buffers behind the proxies in
-front of Spaces, a poll is a plain GET that can't. **"Show progress" isn't a UI
+front of managed hosts, a poll is a plain GET that can't. **"Show progress" isn't a UI
 task; it's a request-shape decision — you can't report on work you're blocking on.**
 
 ## 17. The preview lied by shrinking it
@@ -347,9 +347,9 @@ native resolution before you touch the code.**
   which isn't on a slim image. Textbook deploy-day `ImportError`.
 - **`.gitignore` only ignores untracked files.** Adding a rule after you've
   staged something does nothing.
-- **`git init` doesn't create a branch — the first commit does.** And HF Spaces
-  builds from `main`. Push `master` and it accepts it and never builds, with no
-  error at all.
+- **`git init` doesn't create a branch — the first commit does.** And deploy
+  platforms often build only `main`. Push `master` and it's accepted and never
+  builds, with no error at all.
 - **The browser records the codec we already write.** The Record button uses
   `MediaRecorder` with `video/webm;codecs=vp8` — the same VP8 (#12) the renderer
   encodes and the server serves. Record and render meet in the middle: the clip the

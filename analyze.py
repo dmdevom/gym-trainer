@@ -34,8 +34,33 @@ from typing import List, Optional, Sequence
 
 import llm_coach
 from exercises import Exercise, get_exercise
-from reps import evaluate_checks, find_reps, form_feedback
+from reps import evaluate_checks, find_partials, find_reps, form_feedback
 from video import VideoError, extract_series, median_smooth, pick_side
+
+
+def merge_rep_notes(per_rep: List[dict], coach: dict) -> bool:
+    """Overlay the LLM's validated per-rep notes onto `per_rep`, in place. Returns True iff any
+    LLM note was applied (so the caller can record the source). Only gradeable reps (reason is
+    None) are overridden; a bad rep keeps its deterministic 'not counted' flash and coach note.
+    `coach['rep_notes']` is the all-or-nothing-validated list from llm_coach.generate - empty or
+    absent means there's nothing to apply and the deterministic notes stand."""
+    notes = {n["number"]: n for n in (coach.get("rep_notes") or [])}
+    if not notes:
+        return False
+    applied = False
+    for r in per_rep:
+        if r.get("reason") is not None:     # bad reps stay deterministic by design
+            continue
+        note = notes.get(r["number"])
+        if note:
+            # Both notes are the LLM's here: the flash (the rep's top faults) and the bulleted
+            # coach note. They cleared _validate_rep_notes' all-or-nothing gate, so the flash is
+            # non-empty and within its cap. The deterministic top-3 flash + bulleted coach stand
+            # only when the whole LLM batch was dropped upstream (notes empty -> early return).
+            r["flash_note"] = note["flash"]
+            r["coach_note"] = note["coach"]
+            applied = True
+    return applied
 
 
 def summarize(
@@ -67,7 +92,15 @@ def summarize(
     # see there - and the same series the browser chart and the overlay draw. The
     # thresholds come from the exercise now, not from module constants.
     smoothed = median_smooth(raw)
-    reps = find_reps(smoothed, exercise.up_enter, exercise.down_enter)
+    # Two reads of the same series. find_reps owns the counted cycles (unchanged);
+    # find_partials picks up the attempts it drops - curled-but-not-straightened
+    # (under_extension) and barely-bent (under_contraction). Merge them into one
+    # time-ordered set so a "bad rep" is a first-class, numbered rep: counted in the
+    # total, shown in the breakdown, never full. A clean set has no partials, so this
+    # is a no-op there.
+    completed = find_reps(smoothed, exercise.up_enter, exercise.down_enter)
+    partials = find_partials(smoothed, exercise.up_enter, exercise.down_enter)
+    reps = sorted(completed + partials, key=lambda r: r.start_idx)
 
     # The whole-body form checks, graded within each rep - but only if we were handed
     # the landmarks to judge them with. reps.evaluate_checks bows out (per rep, per
@@ -91,6 +124,15 @@ def summarize(
             "depth_pct": g.depth_pct,
             "issues": g.issues,
             "tags": g.tags,
+            # The two display notes, deterministic here and overridden by merge_rep_notes() if
+            # the LLM path returns valid ones. flash_note = the terse one-line video overlay (the
+            # rep's top faults); coach_note = a list of detailed bullet strings for the table
+            # cell. Both always set, so the fallback is free.
+            "flash_note": g.flash,
+            "coach_note": list(g.issues) or ["Full and controlled."],
+            # None for a real rep; "under_extension"/"under_contraction" for a bad rep -
+            # the client keys its "Incomplete" pill and averages off this.
+            "reason": rep.reason,
             "start_t": round(times[rep.start_idx], 3),
             "end_t": round(times[rep.end_idx], 3),
         }
@@ -116,10 +158,20 @@ def summarize(
         # the card contradict the video's own "3/3 clean". Take the actionable fields from
         # the rules and keep only the LLM's session_story for narrative colour.
         story = coach.get("session_story")
+        notes = coach.get("rep_notes")   # keep the LLM's per-rep notes: they're positive on a
+                                         # clean set, so there's no fault to invent - only the
+                                         # card's actionable fields need the deterministic call
         coach = coaching(grades, exercise, form_checks)
         if story:
             coach["session_story"] = story
+        if notes:
+            coach["rep_notes"] = notes
         coaching_source = "llm+rules"
+
+    # Overlay the LLM's per-rep notes (if any survived validation) onto per_rep; bad reps keep
+    # their deterministic text. This is independent of coaching_source above - the card and the
+    # per-rep notes fall back separately.
+    rep_notes_source = "llm" if merge_rep_notes(per_rep, coach) else "rules"
 
     meta = {
         **meta,
@@ -127,6 +179,7 @@ def summarize(
         "side": side,
         "side_visibility": {k: round(v, 3) for k, v in scores.items()},
         "coaching_source": coaching_source,
+        "rep_notes_source": rep_notes_source,
     }
 
     return {
@@ -157,15 +210,26 @@ def summarize(
 
 
 def _verdict(reps: int, full_reps: int, per_rep: List[dict]) -> str:
-    """The one line a coach would say out loud, built once and reused everywhere."""
+    """The one line a coach would say out loud, built once and reused everywhere.
+
+    `reps` now counts bad reps too, so a clean 3 plus one that didn't fully extend reads
+    "3/4 full reps, 1 not fully extended" - the lifter sees the rep was seen, just not
+    counted as full."""
     if not reps:
         return "no complete reps found"
+    not_extended = sum(1 for r in per_rep if r.get("reason") == "under_extension")
+    not_deep = sum(1 for r in per_rep if r.get("reason") == "under_contraction")
     shallow = sum(1 for r in per_rep if "shallow" in r["tags"])
     rushed = sum(1 for r in per_rep if "rushed" in r["tags"])
-    # A form fault is any tag that isn't the depth/tempo pair - kept as one count so
-    # the line stays short whether it was an elbow drift, a swing, or a forward fold.
-    form = sum(1 for r in per_rep if any(t not in ("shallow", "rushed") for t in r["tags"]))
+    # A form fault is any tag that isn't depth/tempo or the incompleteness reasons - kept
+    # as one count so the line stays short whether it was a drift, a swing, or a fold.
+    _not_form = ("shallow", "rushed", "under_extension", "under_contraction")
+    form = sum(1 for r in per_rep if any(t not in _not_form for t in r["tags"]))
     bits = [f"{full_reps}/{reps} full reps"]
+    if not_extended:
+        bits.append(f"{not_extended} not fully extended")
+    if not_deep:
+        bits.append(f"{not_deep} not deep enough")
     if shallow:
         bits.append(f"{shallow} shallow")
     if rushed:
@@ -217,6 +281,9 @@ def coaching(grades: Sequence["object"], exercise: Exercise,
     reps = len(grades)
     shallow = sum(1 for g in grades if "shallow" in g.tags)
     rushed = sum(1 for g in grades if "rushed" in g.tags)
+    not_extended = sum(1 for g in grades if "under_extension" in g.tags)
+    not_deep = sum(1 for g in grades if "under_contraction" in g.tags)
+    incomplete = not_extended + not_deep    # reps that moved but weren't counted as full
     flagged = [f for f in (form_checks or []) if f["status"] == "flag"]
     unseen = [f for f in (form_checks or []) if f["status"] == "not_assessed"]
 
@@ -237,14 +304,21 @@ def coaching(grades: Sequence["object"], exercise: Exercise,
             "mental_cue": "",   # no reps to cue off; the UI hides an empty cue row
         }
 
-    # Pick the one thing worth fixing first. Posture/safety leads (a folded-forward
-    # squat or a swung curl is the thing to fix before anything else), then depth
-    # beats tempo (a shallow rep skips the muscle; a fast full rep at least did the
-    # work), and a clean session earns the nicest problem to have - add load.
-    # `mental_cue` mirrors the LLM path's extra field so the offline card reads the
-    # same shape: one short physical cue for the next set. A flagged check's label is
-    # already a crisp cue ("Elbow pinned", "Chest up"); the rest get a fixed phrase.
-    if flagged:
+    # Pick the one thing worth fixing first. An uncounted rep leads - there's no point
+    # polishing posture or tempo on a rep that didn't register - then posture/safety (a
+    # folded-forward squat or a swung curl), then depth beats tempo (a shallow rep skips
+    # the muscle; a fast full rep at least did the work), and a clean session earns the
+    # nicest problem to have - add load. `mental_cue` mirrors the LLM path's extra field
+    # so the offline card reads the same shape: one short physical cue for the next set. A
+    # flagged check's label is already a crisp cue ("Elbow pinned", "Chest up"); the rest
+    # get a fixed phrase.
+    if incomplete:
+        # A rep that didn't count is the most fundamental miss - there's no point coaching
+        # form or tempo on reps that aren't even registering. Extension (didn't straighten)
+        # leads a bend that fell short.
+        focus = "Finish every rep" if not_extended else "Reach full depth"
+        mental_cue = "Full range, every rep"
+    elif flagged:
         focus = flagged[0]["label"]
         mental_cue = flagged[0]["label"]
     elif shallow:
@@ -258,6 +332,16 @@ def coaching(grades: Sequence["object"], exercise: Exercise,
         mental_cue = "Add a little, hold form"
 
     next_session: List[str] = []
+    if not_extended:
+        next_session.append(
+            f"{not_extended} of {reps} reps weren't counted - you didn't straighten back "
+            f"out between reps. Fully extend at the bottom of each rep so it counts."
+        )
+    if not_deep:
+        next_session.append(
+            f"{not_deep} of {reps} reps weren't counted - they didn't reach a deep enough "
+            f"bend. {exercise.depth_cue}"
+        )
     for f in flagged:
         next_session.append(
             f"{f['flagged']} of {f['assessed']} reps: {f['fault'].lower()}. {f['cue']}"
@@ -272,7 +356,7 @@ def coaching(grades: Sequence["object"], exercise: Exercise,
             f"{rushed} of {reps} reps were rushed. {exercise.tempo_cue} "
             "Count a two-second lower on each one."
         )
-    if not flagged and not shallow and not rushed:
+    if not flagged and not shallow and not rushed and not incomplete:
         next_session.append(
             "Clean session - every rep full and controlled. Add a rep or a little "
             "weight next time and hold this same form."
@@ -355,6 +439,59 @@ def _print_summary(s: dict) -> None:
         print(f"  - {item}")
 
 
+def _run_tests() -> bool:
+    """Offline spec for merge_rep_notes - the seam that overlays the LLM's per-rep notes onto
+    the deterministic ones. No video or model needed: hand it per_rep rows and a coach dict."""
+    ok = True
+
+    def chk(name, got, want):
+        nonlocal ok
+        good = got == want
+        ok = ok and good
+        print(f"  {'PASS' if good else 'FAIL'}  {name}")
+        if not good:
+            print(f"        got  {got!r}\n        want {want!r}")
+
+    def rows():
+        return [
+            {"number": 1, "reason": None, "flash_note": "Clean - full range, controlled.",
+             "coach_note": ["Full and controlled."]},
+            {"number": 2, "reason": None, "flash_note": "Shallow - short of full depth",
+             "coach_note": ["Shallow - stopped short of full range."]},
+            {"number": 3, "reason": "under_extension", "flash_note": "Not counted - didn't fully extend",
+             "coach_note": ["Not counted - you didn't straighten back out."]},
+        ]
+
+    # LLM notes present: both the flash (the rep's top faults) and the bulleted coach note are
+    # taken as-is for each gradeable rep. The bad rep keeps its deterministic flash and coach.
+    pr = rows()
+    coach = {"rep_notes": [
+        {"number": 1, "flash": "Swinging the torso and rushed",
+         "coach": ["Torso swung to heave the weight.", "Control the lower next time."]},
+        {"number": 2, "flash": "Short of full depth",
+         "coach": ["You stopped short of the top; drive higher."]},
+    ]}
+    chk("llm notes -> applied", merge_rep_notes(pr, coach), True)
+    chk("llm flash used", pr[0]["flash_note"], "Swinging the torso and rushed")
+    chk("rep1 coach overridden (bullet list)", pr[0]["coach_note"],
+        ["Torso swung to heave the weight.", "Control the lower next time."])
+    chk("rep2 flash used", pr[1]["flash_note"], "Short of full depth")
+    chk("rep2 coach overridden", pr[1]["coach_note"], ["You stopped short of the top; drive higher."])
+    chk("bad rep flash untouched", pr[2]["flash_note"], "Not counted - didn't fully extend")
+    chk("bad rep coach untouched", pr[2]["coach_note"], ["Not counted - you didn't straighten back out."])
+
+    # Rules path (coach has no rep_notes) or a validation bail ([]): everything stays deterministic.
+    pr = rows()
+    chk("no rep_notes -> not applied", merge_rep_notes(pr, {"focus": "x"}), False)
+    chk("deterministic flash intact", pr[0]["flash_note"], "Clean - full range, controlled.")
+    chk("deterministic coach intact (list)", pr[0]["coach_note"], ["Full and controlled."])
+    chk("empty rep_notes -> not applied", merge_rep_notes(rows(), {"rep_notes": []}), False)
+
+    print("analyze.py merge_rep_notes")
+    print("all passed" if ok else "\nnot yet - a merge decision is wrong.")
+    return ok
+
+
 def main(path: str) -> None:
     summary = analyze_video(path, os.environ.get("EXERCISE", "bicep_curl"))
     _print_summary(summary)
@@ -367,8 +504,10 @@ def main(path: str) -> None:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "test":
+        sys.exit(0 if _run_tests() else 1)
     if len(sys.argv) < 2:
-        sys.exit("Usage: python analyze.py path/to/video.mp4")
+        sys.exit("Usage: python analyze.py path/to/video.mp4   (or: python analyze.py test)")
     try:
         main(sys.argv[1])
     except VideoError as e:

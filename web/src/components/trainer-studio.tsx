@@ -239,19 +239,31 @@ export function TrainerStudio() {
       setRecordedFile(null);
       setState("idle");
     }
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    // Bring the studio section (hidden while results were up) back into view. It remounts now
+    // that state is no longer "complete", so scroll on the next tick, once it's in the DOM.
+    window.setTimeout(() => document.getElementById("analyze")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  }
+
+  function goToStudio() {
+    // Results unmount the studio (see the `state !== "complete"` gate below); clear the
+    // completed state so it remounts, then scroll to it on the next tick, once it's in the DOM.
+    if (state === "complete") {
+      setResult(null);
+      setState(mode === "sample" || customFile || recordedFile ? "ready" : "idle");
+    }
+    window.setTimeout(() => document.getElementById("analyze")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
 
   function openSampleStudio() {
     if (mode !== "sample") changeMode("sample");
-    window.setTimeout(() => document.getElementById("analyze")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+    goToStudio();
   }
 
   return (
     <main>
       <nav className="site-nav">
         <a className="brand" href="#top" aria-label="trAIner home"><span>tr</span><strong>AI</strong><span>ner</span><i /></a>
-        <a className="nav-cta" href="#analyze">Analyze a set <ArrowRight size={15} /></a>
+        <a className="nav-cta" href="#analyze" onClick={(event) => { event.preventDefault(); goToStudio(); }}>Analyze a set <ArrowRight size={15} /></a>
       </nav>
 
       <section className="hero" id="top">
@@ -285,6 +297,7 @@ export function TrainerStudio() {
         </div>
       </section>
 
+      {state !== "complete" && (
       <section className="studio-section">
         <div className="section-heading" id="analyze"><span className="eyebrow">01 · Pick your movement</span><h2>What are we analyzing?</h2><p>Choose an exercise, then try a sample or use your own video.</p></div>
         <div className="exercise-grid">
@@ -338,6 +351,7 @@ export function TrainerStudio() {
           </div>
         </div>
       </section>
+      )}
 
       {state === "complete" && result && previewUrl && <ResultsDashboard result={result} originalUrl={previewUrl} onReset={reset} />}
 

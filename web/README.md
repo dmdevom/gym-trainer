@@ -1,6 +1,6 @@
 # trAIner web
 
-Responsive Next.js frontend for the AI Gym Trainer API.
+Responsive Next.js frontend for the trAIner API.
 
 **Live:** https://gym-trainer-web-ai.vercel.app
 

@@ -68,7 +68,7 @@ it doesn't go through `backends.py`.
 The upload doesn't block for ~20 s. `POST /analyze/video` returns a **token**
 immediately (202); the heavy work runs in a threadpool worker and reports progress
 into an in-memory `JOBS` dict; the page **polls** `/progress/{token}` (~600 ms) to
-drive a real bar. Polling, not SSE — SSE buffers behind the Spaces proxy.
+drive a real bar. Polling, not SSE — SSE buffers behind the hosting proxy.
 
 ```mermaid
 sequenceDiagram
