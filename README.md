@@ -258,8 +258,8 @@ zero-deploy fallback.
   thresholds especially are first-pass.
 - **100 MB upload cap** (`MAX_UPLOAD_MB`, buffered in RAM per upload); the Next
   proxy in front of the deployed UI also caps bodies (`proxyClientMaxBodySize`);
-  renders queue two at a time by default. The hosted demo runs tighter
-  (`MAX_UPLOAD_MB=40`, one render at a time) to fit its 1 GB box.
+  renders queue two at a time by default. The hosted demo keeps renders to one
+  at a time to fit its 1 GB box.
 
 ## Project layout
 
