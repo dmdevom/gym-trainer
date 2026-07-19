@@ -329,6 +329,68 @@ This is #3 again from a new angle: there I trusted a *helpful* visualisation
 it was displayed, not the ground truth. When a render looks wrong, check it at
 native resolution before you touch the code.**
 
+## 18. The beacon that couldn't preflight
+
+Client-side usage events go out through `navigator.sendBeacon` — the one send that
+survives the page unloading, which a normal `fetch` won't (the tab is gone before it
+flushes). But a beacon has a constraint the tutorials skip: **it can't make a
+preflighted request.** There is no OPTIONS round-trip on the way out — it fires once,
+as the page dies, or not at all.
+
+The page (Vercel) talks to the API (Railway) cross-origin whenever the client points
+straight at it — which is why the app runs CORS in the first place — and a
+cross-origin POST with an `application/json` body is exactly what a browser
+preflights. My instinct was `application/json`, to match every other endpoint. That
+body turns the beacon into a preflighted request, which `sendBeacon` quietly refuses
+to send: it returns `false`, nothing reaches the network, and there is no error
+anywhere to notice.
+
+Keeping it CORS-**"simple"** fixes it. The body is a `text/plain` Blob — a safelisted
+content type that needs no preflight — so the beacon flies. The server reads the raw
+body and `json.loads` it, ignoring the content-type header entirely: the payload is
+still JSON, it just doesn't announce itself as such. `track()` also checks the
+boolean `sendBeacon` hands back and falls back to a `keepalive: true` fetch, because
+a beacon whose return value you don't read is one you're only assuming fired.
+
+This is #1 again at the network layer: **a fire-and-forget beacon has no error path
+by design, so a broken one is indistinguishable from one nobody triggered.** When the
+transport can only fail silently, pick the variant that can't fail — the safelisted
+content-type — over the one that reads cleanest beside the endpoints around it.
+
+## 19. Stateless by design meant blind by default
+
+No accounts, no database, no history — upload, analyse, forget. I liked that rule.
+Then the app went live and I couldn't answer the first question anyone asks: has
+anyone used it, and what did the coach tell them when they did? The prod box has an
+ephemeral disk, so results vanish on restart *by design* — and that same property
+means there is nothing left to look at afterward. The guardrail I was proud of had
+made me blind.
+
+The wrong fix is to reverse it — add a DB, start keeping clips. The right one is a
+single append-only JSONL trail (`telemetry.py`) that buys back the one missing signal
+and nothing else, held to the same discipline that made the original choice good:
+
+- **On a persistent volume, or it's pointless.** It writes only when `TELEMETRY_DIR`
+  is set, and in prod that's a mounted `/data`, not the app dir. Point it at the
+  ephemeral disk and the trail evaporates on the next deploy, right next to the
+  results it was meant to outlive — the same lesson as baking the model into the
+  image (#14): on this class of host, what you want to keep lives on a volume or it
+  doesn't live.
+- **The IP is hashed before it is ever written** — a salted SHA-256 with the *day*
+  folded in and truncated to 12 chars, so the same visitor hashes differently
+  tomorrow. Text only: never a clip, never landmarks, never a raw address. I wanted a
+  headcount, not a dossier.
+- **Off the request path or not at all.** `record()` drops the event into an
+  in-memory buffer and returns; a daemon thread does the file IO on a timer and a
+  final flush on shutdown. A slow or full volume loses telemetry, never a request —
+  the same fail-open posture as the LLM coach, one layer over: a feature that
+  measures the product must never be able to break it.
+
+The through-line: **one design choice can be a strength and a blind spot at the same
+time.** Statelessness was both. You don't resolve that by undoing the choice — you
+add back the single signal it cost you, under the rules that made the choice worth
+making: off by default, privacy-first, and incapable of harming the thing it watches.
+
 ---
 
 ## Smaller things that cost me time
@@ -354,3 +416,13 @@ native resolution before you touch the code.**
   `MediaRecorder` with `video/webm;codecs=vp8` — the same VP8 (#12) the renderer
   encodes and the server serves. Record and render meet in the middle: the clip the
   user films is already the one format everything downstream speaks, no transcode.
+- **Snapshot the request context before the slow work, not after.** `_run_job` copies
+  `mode` and the hashed IP out of the job dict at the very top, because `_prune_jobs`
+  can evict the job while the 20–30 s render runs; read them at the end — when the
+  telemetry record is finally written — and they may already be gone. The work
+  outlives the bookkeeping that launched it.
+- **The freshest events aren't on disk yet.** `read_recent()` (the admin endpoint)
+  calls `_flush()` before it reads, because the last few seconds of events are still
+  in the in-memory buffer, not the file. Query the JSONL directly and you'd miss
+  exactly the events you just triggered while testing — and conclude, wrongly, that
+  logging is broken.
