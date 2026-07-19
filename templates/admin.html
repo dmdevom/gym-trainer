@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>trAIner · telemetry</title>
+<style>
+ :root{--bg:#0e0f13;--panel:#14161c;--panel2:#191c24;--bd:#262a33;--tx:#e7e9ee;--mut:#9aa0ad;--acc:#ff7a45;--lime:#b6f36b;--blue:#5aa9ff}
+ *{box-sizing:border-box}
+ body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+ .wrap{max-width:1100px;margin:0 auto;padding:24px 20px 60px}
+ header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+ h1{font-size:20px;margin:0;font-weight:700;letter-spacing:.2px}
+ h1 b{color:var(--acc)}
+ .sub{color:var(--mut);font-size:12.5px;margin-top:3px}
+ .btn{background:var(--panel2);border:1px solid var(--bd);color:var(--tx);padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px}
+ .btn:hover{border-color:var(--acc)}
+ .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:6px}
+ .card{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:14px 16px}
+ .card .n{font-size:26px;font-weight:700;line-height:1.1}
+ .card .l{color:var(--mut);font-size:11.5px;text-transform:uppercase;letter-spacing:.5px;margin-top:4px}
+ .card .s{color:var(--mut);font-size:11.5px;margin-top:3px}
+ h2{font-size:12.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut);margin:28px 0 12px}
+ .panel{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:16px}
+ .funnel{display:flex;flex-direction:column;gap:8px}
+ .frow{display:grid;grid-template-columns:140px 1fr 44px;align-items:center;gap:10px;font-size:13px}
+ .frow b{text-align:right}
+ .bar{height:22px;background:var(--panel2);border-radius:6px;overflow:hidden}
+ .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),#ff9a6b)}
+ .chips{display:flex;flex-wrap:wrap;gap:8px}
+ .chip{background:var(--panel2);border:1px solid var(--bd);border-radius:20px;padding:5px 12px;font-size:12.5px}
+ .chip b{color:var(--acc)}
+ .search{width:100%;background:var(--panel2);border:1px solid var(--bd);color:var(--tx);padding:10px 14px;border-radius:8px;font-size:14px;margin-bottom:12px}
+ .search::placeholder{color:var(--mut)}
+ table{width:100%;border-collapse:collapse;font-size:13px}
+ th{text-align:left;color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.4px;padding:10px;border-bottom:1px solid var(--bd)}
+ td{padding:10px;border-bottom:1px solid var(--bd);vertical-align:top}
+ tr.a{cursor:pointer}
+ tr.a:hover td{background:var(--panel2)}
+ .tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700}
+ .tag.llm{background:rgba(182,243,107,.15);color:var(--lime)}
+ .tag.rules{background:rgba(154,160,173,.15);color:var(--mut)}
+ .detail td{background:#0b0c10}
+ .story{margin-bottom:8px}
+ .cue{color:var(--blue);font-size:12.5px;margin-bottom:10px}
+ .rep{border-left:2px solid var(--bd);padding:2px 0 2px 12px;margin:8px 0}
+ .rep .flash{font-weight:600}
+ .rep ul{margin:4px 0 0;padding-left:18px;color:var(--mut)}
+ .muted{color:var(--mut)}
+ .empty{color:var(--mut);text-align:center;padding:40px}
+ @media(max-width:600px){.frow{grid-template-columns:100px 1fr 40px}.hidecol{display:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+ <header>
+  <div>
+   <h1>tr<b>AI</b>ner · telemetry</h1>
+   <div class="sub" id="range"></div>
+  </div>
+  <button class="btn" onclick="location.reload()">&#8635; Refresh</button>
+ </header>
+
+ <div class="cards" id="cards"></div>
+
+ <h2>Funnel</h2>
+ <div class="panel funnel" id="funnel"></div>
+
+ <h2>By exercise</h2>
+ <div class="panel"><div class="chips" id="byex"></div></div>
+
+ <h2>Coaching responses</h2>
+ <input class="search" id="q" placeholder="Search focus, exercise, verdict, story&#8230;">
+ <div class="panel" style="padding:0;overflow-x:auto">
+  <table>
+   <thead><tr><th>Time</th><th>Exercise</th><th class="hidecol">Mode</th><th>Reps</th><th class="hidecol">Verdict</th><th>Source</th><th>Focus</th></tr></thead>
+   <tbody id="rows"></tbody>
+  </table>
+  <div class="empty" id="empty" style="display:none">No coaching responses yet.</div>
+ </div>
+</div>
+
+<script>
+const EVENTS = __EVENTS_JSON__;
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const analyses = EVENTS.filter(e=>e.event==='analysis_complete');
+const uniq=(a,k)=>new Set(a.map(e=>e[k]).filter(Boolean)).size;
+const cnt=t=>EVENTS.filter(e=>e.event===t).length;
+const llm = analyses.filter(a=>String(a.coaching_source||'').includes('llm')).length;
+const ts = EVENTS.map(e=>e.ts).filter(Boolean).sort();
+
+document.getElementById('range').textContent =
+  EVENTS.length ? (EVENTS.length+' events · '+ts[0].replace('T',' ')+' → '+ts[ts.length-1].replace('T',' ')+' (server time)') : 'no events yet';
+
+const cards=[
+ ['Analyses',analyses.length,'sets analysed'],
+ ['Visitors',uniq(EVENTS,'cid'),'unique browsers'],
+ ['IPs',uniq(EVENTS,'ip_hash'),'hashed, distinct'],
+ ['Page views',cnt('page_view'),'landings'],
+ ['LLM-coached',analyses.length?Math.round(100*llm/analyses.length)+'%':'—',llm+' of '+analyses.length],
+ ['Errors',cnt('analysis_error'),'failed analyses'],
+];
+document.getElementById('cards').innerHTML = cards.map(c=>
+ `<div class="card"><div class="n">${esc(c[1])}</div><div class="l">${esc(c[0])}</div><div class="s">${esc(c[2])}</div></div>`).join('');
+
+const steps=[['Page view','page_view'],['Input ready','input_ready'],['Analysis started','analysis_started'],['Completed','analysis_complete'],['Result viewed','result_viewed']];
+const mx=Math.max(1,...steps.map(s=>cnt(s[1])));
+document.getElementById('funnel').innerHTML = steps.map(s=>{const n=cnt(s[1]);return `<div class="frow"><span>${s[0]}</span><div class="bar"><i style="width:${Math.round(100*n/mx)}%"></i></div><b>${n}</b></div>`;}).join('');
+
+const byex={};
+analyses.forEach(a=>{const k=a.exercise||'?';byex[k]=(byex[k]||0)+1;});
+document.getElementById('byex').innerHTML = Object.keys(byex).length?
+ Object.entries(byex).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<span class="chip">${esc(k)} <b>${v}</b></span>`).join(''):
+ '<span class="muted">no analyses yet</span>';
+
+const rows = analyses.slice().reverse();  // newest first
+function repHtml(a){
+ const rn=(a.rep_notes||[]).map(r=>`<div class="rep"><div class="flash">Rep ${esc(r.number)}: ${esc(r.flash)}</div>`+
+   ((r.coach||[]).length?`<ul>${(r.coach||[]).map(c=>`<li>${esc(c)}</li>`).join('')}</ul>`:'')+`</div>`).join('');
+ return (a.session_story?`<div class="story">${esc(a.session_story)}</div>`:'')+
+  (a.mental_cue?`<div class="cue">&#9670; ${esc(a.mental_cue)}</div>`:'')+
+  (rn||'<div class="muted">no per-rep notes</div>');
+}
+function render(filter){
+ const f=(filter||'').toLowerCase();
+ const shown = rows.filter(a=>!f || [a.exercise,a.focus,a.verdict,a.session_story,a.mental_cue,a.mode].join(' ').toLowerCase().includes(f));
+ document.getElementById('empty').style.display = shown.length?'none':'block';
+ document.getElementById('rows').innerHTML = shown.map(a=>{
+  const src=String(a.coaching_source||'rules').includes('llm')?'llm':'rules';
+  return `<tr class="a" onclick="var d=this.nextElementSibling;d.style.display=d.style.display==='table-row'?'none':'table-row'">
+   <td class="muted">${esc((a.ts||'').replace('T',' '))}</td>
+   <td>${esc(a.exercise||'?')}</td>
+   <td class="hidecol">${esc(a.mode||'')}</td>
+   <td>${esc(a.reps==null?'':a.reps)}</td>
+   <td class="hidecol muted">${esc(a.verdict||'')}</td>
+   <td><span class="tag ${src}">${src}</span></td>
+   <td>${esc(a.focus||'—')}</td>
+  </tr>
+  <tr class="detail" style="display:none"><td colspan="7">${repHtml(a)}</td></tr>`;
+ }).join('');
+}
+render('');
+document.getElementById('q').addEventListener('input',e=>render(e.target.value));
+</script>
+</body>
+</html>

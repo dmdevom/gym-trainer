@@ -376,3 +376,22 @@ def admin_telemetry(token: str = "", limit: int = 200):
     if not secret or not hmac.compare_digest(token, secret):
         return JSONResponse(status_code=403, content={"error": "forbidden"})
     return {"events": telemetry.read_recent(max(1, min(limit, 2000)))}
+
+
+@app.get("/admin/dashboard", response_class=HTMLResponse)
+def admin_dashboard(token: str = "", limit: int = 2000):
+    # A human view of the same trail: stat cards, a funnel, and a searchable table of every
+    # coaching response. Served from the backend so it reads its own data same-origin (no CORS)
+    # and dodges the strict CSP that stops a static claude.ai artifact from calling this API.
+    # The events are embedded into the page; a full reload (the Refresh button) re-reads them.
+    secret = os.environ.get("ADMIN_TOKEN", "")
+    if not secret or not hmac.compare_digest(token, secret):
+        return HTMLResponse(
+            "<h1 style='font:600 18px sans-serif;color:#333;padding:24px'>403 — bad or missing ?token</h1>",
+            status_code=403,
+        )
+    events = telemetry.read_recent(max(1, min(limit, 5000)))
+    # JSON is valid JS; neutralize any literal </script> that could appear in coaching text.
+    data = json.dumps(events).replace("<", "\\u003c")
+    html = (TEMPLATES / "admin.html").read_text().replace("__EVENTS_JSON__", data)
+    return HTMLResponse(html)
