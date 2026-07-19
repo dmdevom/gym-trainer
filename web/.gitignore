@@ -3,6 +3,7 @@ node_modules
 coverage
 .env*.local
 npm-debug.log*
+.vercel
 
 # TypeScript incremental build cache (regenerated on every build)
 *.tsbuildinfo

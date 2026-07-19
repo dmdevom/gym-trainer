@@ -186,7 +186,7 @@ export function TrainerStudio() {
         setResult(update.result);
         setState("complete");
         setProgress({ stage: "Complete", pct: 100 });
-        window.setTimeout(() => document.getElementById("results")?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+        window.setTimeout(() => document.querySelector("#results .results-heading")?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
         return;
       }
       await new Promise((resolve) => window.setTimeout(resolve, 750));
@@ -234,8 +234,8 @@ export function TrainerStudio() {
         </div>
       </section>
 
-      <section className="studio-section" id="analyze">
-        <div className="section-heading"><span className="eyebrow">01 · Pick your movement</span><h2>What are we analyzing?</h2><p>Choose an exercise, then try a sample or use your own video.</p></div>
+      <section className="studio-section">
+        <div className="section-heading" id="analyze"><span className="eyebrow">01 · Pick your movement</span><h2>What are we analyzing?</h2><p>Choose an exercise, then try a sample or use your own video.</p></div>
         <div className="exercise-grid">
           {exercises.map((exercise) => (
             <button key={exercise.key} type="button" className={`exercise-card ${selectedExercise === exercise.key ? "selected" : ""}`} onClick={() => changeExercise(exercise.key)} disabled={busy}>
@@ -267,7 +267,7 @@ export function TrainerStudio() {
               {mode === "upload" && (
                 customFile && previewUrl ? <div className="uploaded-preview"><video src={previewUrl} controls playsInline /><button type="button" className="secondary-button" onClick={() => { releaseOwnedPreview(); setCustomFile(null); setPreviewUrl(""); setState("idle"); }} disabled={busy}><RotateCcw size={16} /> Choose another</button></div> :
                 <div className="drop-zone" onDragOver={(event) => { event.preventDefault(); event.currentTarget.classList.add("dragging"); }} onDragLeave={(event) => event.currentTarget.classList.remove("dragging")} onDrop={handleDrop}>
-                  <span className="upload-icon"><FileVideo size={28} /></span><h3>Drop your workout video here</h3><p>MP4, MOV, WebM and more · up to 50 MB</p><label className="secondary-button">Browse files<input type="file" accept="video/*,.mp4,.mov,.webm,.avi,.mkv,.m4v,.3gp" onChange={handleFileInput} /></label>
+                  <span className="upload-icon"><FileVideo size={28} /></span><h3>Drop your workout video here</h3><p>MP4, MOV, WebM and more · up to 15 MB</p><label className="secondary-button">Browse files<input type="file" accept="video/*,.mp4,.mov,.webm,.avi,.mkv,.m4v,.3gp" onChange={handleFileInput} /></label>
                 </div>
               )}
 

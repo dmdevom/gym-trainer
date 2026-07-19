@@ -1,6 +1,6 @@
 "use client";
 
-import { Camera, CameraOff, RefreshCw, RotateCcw, Square, Video } from "lucide-react";
+import { Camera, CameraOff, Clock3, RefreshCw, RotateCcw, Square, Video } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const MAX_RECORD_SECONDS = 30;
@@ -31,6 +31,7 @@ export function CameraRecorder({ disabled, onCapture, onError }: CameraRecorderP
   const [elapsed, setElapsed] = useState(0);
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
   const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
+  const secondsRemaining = Math.max(0, Math.ceil(MAX_RECORD_SECONDS - elapsed));
 
   useEffect(() => {
     onCaptureRef.current = onCapture;
@@ -190,8 +191,14 @@ export function CameraRecorder({ disabled, onCapture, onError }: CameraRecorderP
         {!requesting && !cameraReady && !recordedUrl && (
           <div className="camera-overlay"><CameraOff size={22} /> Camera unavailable</div>
         )}
+        {cameraReady && !recording && !recordedUrl && (
+          <div className="record-limit"><Clock3 size={15} /><span><strong>{MAX_RECORD_SECONDS} seconds max</strong>Stops automatically</span></div>
+        )}
         {recording && (
-          <div className="record-badge"><span /> REC&nbsp; {elapsed.toFixed(1)} / {MAX_RECORD_SECONDS}s</div>
+          <>
+            <div className={`record-badge${secondsRemaining <= 5 ? " ending" : ""}`}><span /> REC&nbsp; {secondsRemaining}s left</div>
+            <div className={`record-limit-progress${secondsRemaining <= 5 ? " ending" : ""}`} aria-hidden="true"><i style={{ width: `${Math.min(100, (elapsed / MAX_RECORD_SECONDS) * 100)}%` }} /></div>
+          </>
         )}
       </div>
 
