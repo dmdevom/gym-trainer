@@ -13,7 +13,7 @@ import { CameraRecorder } from "./camera-recorder";
 import { ResultsDashboard } from "./results-dashboard";
 
 const FALLBACK_EXERCISES: Exercise[] = [
-  { key: "bicep_curl", name: "Bicep Curl", vertex_name: "elbow", film_tip: "Film side-on, whole arm in frame.", tips: [] },
+  { key: "bicep_curl", name: "Single-arm Bicep Curl", vertex_name: "elbow", film_tip: "Film side-on, whole arm in frame.", tips: [] },
   { key: "barbell_curl", name: "Barbell Curl", vertex_name: "elbow", film_tip: "Film side-on, whole torso and arms in frame.", tips: [] },
   { key: "squat", name: "Squat", vertex_name: "knee", film_tip: "Film side-on, whole body in frame — step back so your feet show.", tips: [] },
 ];
@@ -58,9 +58,7 @@ export function TrainerStudio() {
   useEffect(() => {
     const controller = new AbortController();
     fetchExercises(controller.signal).then((items) => {
-      if (items.length) setExercises(items.map((exercise) =>
-        exercise.key === "bicep_curl" ? { ...exercise, name: "Bicep Curl" } : exercise
-      ));
+      if (items.length) setExercises(items);
     }).catch(() => undefined);
     return () => controller.abort();
   }, []);
@@ -281,7 +279,7 @@ export function TrainerStudio() {
           <div className="orbit orbit-one" /><div className="orbit orbit-two" />
           <div className="hero-panel">
             <Image className="hero-photo" src="/hero-dumbbell-curl.jpg" alt="Athlete performing a dumbbell curl while trAIner analyzes the movement" fill sizes="(max-width: 700px) 330px, 390px" priority />
-            <div className="hero-analysis-status"><i /> Analyzing · Bicep curl</div>
+            <div className="hero-analysis-status"><i /> Analyzing · Single-arm bicep curl</div>
             <div className="hero-insight-stack" aria-label="Example analysis feedback">
               {HERO_INSIGHTS.map((insight, index) => {
                 const position = (index - heroInsightIndex + HERO_INSIGHTS.length) % HERO_INSIGHTS.length;
