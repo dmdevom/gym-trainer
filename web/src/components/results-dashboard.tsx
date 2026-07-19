@@ -104,8 +104,25 @@ export function ResultsDashboard({ result, originalUrl, onReset }: ResultsDashbo
             ))}</div>
           </>
         ) : <div className="empty-reps">Try filming side-on with your full working limb visible, then analyze again.</div>}
+        {!!result.form_checks?.length && <FormChecks checks={result.form_checks} />}
       </article>
     </section>
+  );
+}
+
+function FormChecks({ checks }: { checks: NonNullable<AnalysisResult["form_checks"]> }) {
+  return (
+    <div className="form-checks">
+      <span className="card-kicker">What we checked</span>
+      <div className="check-chips">
+        {checks.map((check) => {
+          const tone = check.status === "flag" ? "bad" : check.status === "not_assessed" ? "dim" : "ok";
+          const text = check.status === "flag" ? `${check.label} · ${check.flagged}/${check.assessed}`
+            : check.status === "not_assessed" ? `${check.label} · not in frame` : `${check.label} ✓`;
+          return <span key={check.key} className={`check-chip ${tone}`} title={check.status === "flag" ? check.cue : undefined}>{text}</span>;
+        })}
+      </div>
+    </div>
   );
 }
 

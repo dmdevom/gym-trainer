@@ -6,9 +6,9 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { ChangeEvent, DragEvent, useCallback, useEffect, useRef, useState } from "react";
-import { fetchExercises, fetchProgress, submitVideo, validateVideo } from "@/lib/api";
+import { fetchExercises, fetchProgress, MAX_VIDEO_MB, submitVideo, validateVideo } from "@/lib/api";
 import { DEMO_SAMPLES, samplesForExercise } from "@/lib/samples";
-import type { AnalysisResult, AnalysisState, DemoSample, Exercise, ExerciseKey, InputMode } from "@/lib/types";
+import type { AnalysisResult, AnalysisState, DemoSample, Exercise, ExerciseKey, InputMode, ProgressResponse } from "@/lib/types";
 import { CameraRecorder } from "./camera-recorder";
 import { ResultsDashboard } from "./results-dashboard";
 
@@ -66,9 +66,12 @@ export function TrainerStudio() {
     if (busy) return;
     setSelectedExercise(key);
     setError(null);
+    setResult(null);
     if (mode === "sample") {
       const next = samplesForExercise(key)[0];
       if (next) chooseSample(next);
+    } else if (state === "complete") {
+      setState((mode === "upload" ? customFile : recordedFile) ? "ready" : "idle");
     }
   }
 
@@ -178,8 +181,19 @@ export function TrainerStudio() {
 
   async function pollAnalysis(token: string, controller: AbortController) {
     const deadline = Date.now() + 10 * 60 * 1000;
+    let failedPolls = 0;
     while (!controller.signal.aborted && Date.now() < deadline) {
-      const update = await fetchProgress(token, controller.signal);
+      let update: ProgressResponse;
+      try {
+        update = await fetchProgress(token, controller.signal);
+        failedPolls = 0;
+      } catch (caught) {
+        // One dropped poll must not kill a 30s analysis - only give up after
+        // several failures in a row. A server-reported job error still throws below.
+        if (controller.signal.aborted || ++failedPolls >= 3) throw caught;
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        continue;
+      }
       setProgress({ stage: update.stage || "Analyzing movement", pct: update.pct ?? 12 });
       if (update.error) throw new Error(update.error);
       if (update.done && update.result) {
@@ -267,7 +281,7 @@ export function TrainerStudio() {
               {mode === "upload" && (
                 customFile && previewUrl ? <div className="uploaded-preview"><video src={previewUrl} controls playsInline /><button type="button" className="secondary-button" onClick={() => { releaseOwnedPreview(); setCustomFile(null); setPreviewUrl(""); setState("idle"); }} disabled={busy}><RotateCcw size={16} /> Choose another</button></div> :
                 <div className="drop-zone" onDragOver={(event) => { event.preventDefault(); event.currentTarget.classList.add("dragging"); }} onDragLeave={(event) => event.currentTarget.classList.remove("dragging")} onDrop={handleDrop}>
-                  <span className="upload-icon"><FileVideo size={28} /></span><h3>Drop your workout video here</h3><p>MP4, MOV, WebM and more · up to 50 MB</p><label className="secondary-button">Browse files<input type="file" accept="video/*,.mp4,.mov,.webm,.avi,.mkv,.m4v,.3gp" onChange={handleFileInput} /></label>
+                  <span className="upload-icon"><FileVideo size={28} /></span><h3>Drop your workout video here</h3><p>MP4, MOV, WebM and more · up to {MAX_VIDEO_MB} MB</p><label className="secondary-button">Browse files<input type="file" accept="video/*,.mp4,.mov,.webm,.avi,.mkv,.m4v,.3gp" onChange={handleFileInput} /></label>
                 </div>
               )}
 

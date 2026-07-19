@@ -5,7 +5,10 @@ export const API_BASE_URL = (
   "/backend-api"
 ).replace(/\/$/, "");
 
-export const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
+// Keep in sync with the backend's MAX_UPLOAD_MB (default 500). Override at build
+// time with NEXT_PUBLIC_MAX_UPLOAD_MB; the backend is the real gatekeeper (413).
+export const MAX_VIDEO_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB) || 100;
+export const MAX_VIDEO_BYTES = MAX_VIDEO_MB * 1024 * 1024;
 export const ACCEPTED_VIDEO_EXTENSIONS = ["mp4", "mov", "webm", "avi", "mkv", "m4v", "3gp"];
 
 export class ApiError extends Error {
@@ -59,7 +62,7 @@ export function resultVideoUrl(result: AnalysisResult): string {
 }
 
 export function validateVideo(file: File): string | null {
-  if (file.size > MAX_VIDEO_BYTES) return "Video must be smaller than 50 MB.";
+  if (file.size > MAX_VIDEO_BYTES) return `Video must be smaller than ${MAX_VIDEO_MB} MB.`;
   if (file.size === 0) return "This video is empty. Choose or record another clip.";
   const extension = file.name.split(".").pop()?.toLowerCase() || "";
   if (!file.type.startsWith("video/") && !ACCEPTED_VIDEO_EXTENSIONS.includes(extension)) {

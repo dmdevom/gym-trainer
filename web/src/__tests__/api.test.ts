@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveStats, MAX_VIDEO_BYTES, resultVideoUrl, validateVideo } from "@/lib/api";
+import { deriveStats, MAX_VIDEO_BYTES, MAX_VIDEO_MB, resultVideoUrl, validateVideo } from "@/lib/api";
 import { samplesForExercise } from "@/lib/samples";
 import type { AnalysisResult } from "@/lib/types";
 
@@ -12,7 +12,7 @@ describe("video validation", () => {
     expect(validateVideo(new File([], "empty.mp4", { type: "video/mp4" }))).toContain("empty");
     const oversized = new File(["video"], "large.mp4", { type: "video/mp4" });
     Object.defineProperty(oversized, "size", { value: MAX_VIDEO_BYTES + 1 });
-    expect(validateVideo(oversized)).toContain("50 MB");
+    expect(validateVideo(oversized)).toContain(`${MAX_VIDEO_MB} MB`);
   });
 
   it("accepts a known extension when a phone supplies a generic MIME type", () => {

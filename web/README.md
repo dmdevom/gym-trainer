@@ -2,6 +2,8 @@
 
 Responsive Next.js frontend for the AI Gym Trainer API.
 
+**Live:** https://gym-trainer-web-ai.vercel.app
+
 ## Run locally
 
 ```bash
