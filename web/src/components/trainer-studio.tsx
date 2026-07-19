@@ -273,6 +273,7 @@ export function TrainerStudio() {
           <p>Upload or record one set. See every rep counted, graded, and explained — with a landmarked replay that shows exactly what to fix.</p>
           <div className="hero-actions">
             <button className="primary-button hero-button" type="button" onClick={openSampleStudio}><Play size={17} fill="currentColor" /> Try a sample</button>
+            <button className="secondary-button hero-button" type="button" onClick={goToStudio}><Gauge size={17} /> Analyze a set</button>
           </div>
           <div className="hero-signals"><span><i /> 3 exercises</span><span><i /> Rep-by-rep feedback</span><span><i /> Results in seconds</span></div>
         </div>
@@ -355,7 +356,7 @@ export function TrainerStudio() {
 
       {state === "complete" && result && previewUrl && <ResultsDashboard result={result} originalUrl={previewUrl} onReset={reset} />}
 
-      <footer><a className="brand" href="#top"><span>tr</span><strong>AI</strong><span>ner</span><i /></a><p>Built to make every rep count.</p></footer>
+      <footer><a className="brand" href="#top"><span>tr</span><strong>AI</strong><span>ner</span><i /></a><p>Train every rep.</p></footer>
     </main>
   );
 }
