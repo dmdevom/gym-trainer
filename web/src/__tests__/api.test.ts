@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveStats, MAX_VIDEO_BYTES, MAX_VIDEO_MB, resultVideoUrl, validateVideo } from "@/lib/api";
+import { deriveStats, MAX_VIDEO_BYTES, MAX_VIDEO_MB, resolveCoachingTokens, resultVideoUrl, validateVideo } from "@/lib/api";
 import { samplesForExercise } from "@/lib/samples";
 import type { AnalysisResult } from "@/lib/types";
 
@@ -35,6 +35,13 @@ describe("result helpers", () => {
 
   it("normalizes relative result URLs", () => {
     expect(resultVideoUrl(result)).toBe("/backend-api/results/example");
+  });
+
+  it("resolves leaked coaching threshold placeholders", () => {
+    expect(resolveCoachingTokens("Aim for at least [min_controlled_tempo_s] seconds.", 1.3))
+      .toBe("Aim for at least 1.3 seconds.");
+    expect(resolveCoachingTokens("Use min_controlled_tempo_s seconds.", 1.2))
+      .toBe("Use 1.2 seconds.");
   });
 
   it("keeps a pass and form-check sample for every exercise", () => {

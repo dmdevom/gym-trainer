@@ -48,18 +48,18 @@ export const DEMO_SAMPLES: DemoSample[] = [
     label: "Clean squat",
     description: "Full depth with control",
     src: "/samples/squat-pass.mp4",
-    sourceUrl: "https://commons.wikimedia.org/wiki/File:Squat_-_exercise_demonstration_video.webm",
-    creator: "FitnessScape",
+    sourceUrl: "user-provided-footage",
+    creator: "trAIner team",
   },
   {
     id: "squat-fail",
     exercise: "squat",
     grade: "fail",
     label: "Needs work",
-    description: "Real gym set with shallow, rushed reps",
+    description: "See how rushed reps are graded",
     src: "/samples/squat-fail.mp4",
-    sourceUrl: "https://www.reddit.com/r/strength_training/comments/1rvfy42/squats_not_getting_low_enough/",
-    creator: "u/blazesboylan91",
+    sourceUrl: "user-provided-footage",
+    creator: "trAIner team",
   },
 ];
 
