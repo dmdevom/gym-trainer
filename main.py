@@ -1,8 +1,11 @@
 import asyncio
 from contextlib import asynccontextmanager
+import hmac
+import json
 import logging
 import os
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -19,12 +22,13 @@ try:
 except ImportError:  # dep not installed -> just use the real environment
     pass
 
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 import llm_coach
+import telemetry
 from analyzer import CONF_MIN
 from backends import get_backend
 from exercises import EXERCISES
@@ -94,8 +98,13 @@ async def lifespan(app: FastAPI):
     li = llm_coach.info()
     log.info("  llm coaching : %s", li["model"] if li["enabled"] else "off (rule-based)")
     log.info("  results dir  : %s", RESULTS_DIR)
+    # Usage/LLM-response trail. Off unless TELEMETRY_DIR is set; the writer thread lives
+    # for the app's lifetime and does a final flush on shutdown so no events are lost.
+    telemetry.start()
+    log.info("  telemetry    : %s", os.environ.get("TELEMETRY_DIR") or "off")
     log.info("─" * 52)
     yield
+    telemetry.stop()
 
 
 app = FastAPI(title="trAIner", version="0.2.0", lifespan=lifespan)
@@ -138,6 +147,35 @@ def exercises():
     return {"exercises": [e.brief() for e in EXERCISES.values()]}
 
 
+def _analysis_fields(summary: dict, ctx: dict) -> dict:
+    """Flatten a finished summary into one compact telemetry record: the measured set plus
+    the LLM coaching text, and NOTHING heavy - no `series`, no `thresholds`, no media. This
+    is the "save the LLM response" record; a long set is still only a few KB."""
+    meta = summary.get("meta") or {}
+    ex = meta.get("exercise") or {}
+    coaching = summary.get("coaching") or {}
+    li = llm_coach.info()
+    return {
+        "src": "api",
+        "exercise": ex.get("key"),
+        "mode": ctx.get("mode"),
+        "ip_hash": ctx.get("ip_hash"),
+        "reps": summary.get("reps"),
+        "full_reps": summary.get("full_reps"),
+        "verdict": summary.get("verdict"),
+        "coaching_source": meta.get("coaching_source"),      # llm / rules / llm+rules
+        "rep_notes_source": meta.get("rep_notes_source"),
+        "llm_model": li.get("model") if li.get("enabled") else None,
+        "focus": coaching.get("focus"),
+        "session_story": coaching.get("session_story"),
+        "mental_cue": coaching.get("mental_cue"),
+        "rep_notes": [
+            {"number": r.get("number"), "flash": r.get("flash_note"), "coach": r.get("coach_note")}
+            for r in (summary.get("per_rep") or [])
+        ] or None,
+    }
+
+
 async def _run_job(token: str, src: str, dst: str, exercise_key: str) -> None:
     """Do the slow work off to the side and report progress into JOBS[token].
 
@@ -160,6 +198,11 @@ async def _run_job(token: str, src: str, dst: str, exercise_key: str) -> None:
         if job is not None:
             job.update(fields)
 
+    # Snapshot the request context stashed by the endpoint (mode, hashed IP) up front, so
+    # the telemetry record is complete even if _prune_jobs evicts the job mid-render.
+    job0 = JOBS.get(token) or {}
+    ctx = {"mode": job0.get("mode"), "ip_hash": job0.get("ip_hash")}
+
     try:
         if RENDER_SEMAPHORE.locked():
             progress_cb("Queued", 0)
@@ -168,19 +211,26 @@ async def _run_job(token: str, src: str, dst: str, exercise_key: str) -> None:
         summary.pop("video", None)               # a local path; the browser gets a URL
         summary["video_url"] = f"/results/{token}"
         finish(stage="Done", pct=100, done=True, result=summary)
+        telemetry.record("analysis_complete", **_analysis_fields(summary, ctx))
     except VideoError as e:
         finish(stage="Error", done=True, error=str(e))
+        telemetry.record("analysis_error", src="api", exercise=exercise_key,
+                         kind="video", detail=str(e), **ctx)
     except Exception:
         log.exception("analysis failed for token %s", token)
         finish(stage="Error", done=True, error="Analysis failed on this clip. Try another.")
+        telemetry.record("analysis_error", src="api", exercise=exercise_key,
+                         kind="internal", **ctx)
     finally:
         Path(src).unlink(missing_ok=True)        # keep only the rendered .webm
 
 
 @app.post("/analyze/video", status_code=202)
 async def analyze_video_endpoint(
+    request: Request,
     file: UploadFile = File(...),
     exercise: str = Form("bicep_curl"),
+    mode: str = Form("unknown"),      # "sample"/"upload"/"record" from the client; a label only
 ):
     # Phones love to send video as application/octet-stream, so accept on either
     # the content-type OR a known extension rather than rejecting a real clip.
@@ -215,9 +265,19 @@ async def analyze_video_endpoint(
     # the background so the page can show a real progress bar instead of a spinner
     # that says nothing for 20 seconds. get_exercise (inside annotate_video) defaults
     # a bad key rather than erroring, so no validation is needed here.
+    #
+    # Stash the request context (input mode, a hashed IP - never the raw one) on the job
+    # so _run_job can attach it to the analysis_complete/error telemetry record; the raw
+    # user-agent is kept only for the start event's device signal.
+    mode = (mode or "unknown")[:20]
+    iph = telemetry.ip_hash(request.client.host if request.client else None)
+    ua = request.headers.get("user-agent", "")[:200]
     JOBS[token] = {"stage": "Starting", "pct": 0, "done": False, "error": None,
-                   "result": None, "created": time.time()}
+                   "result": None, "created": time.time(),
+                   "mode": mode, "ip_hash": iph, "ua": ua, "exercise": exercise}
     _prune_jobs()
+    telemetry.record("analysis_started", src="api", exercise=exercise, mode=mode,
+                     ip_hash=iph, ua=ua)
     asyncio.create_task(_run_job(token, str(src), str(dst), exercise))
     return JSONResponse(status_code=202, content={"token": token})
 
@@ -251,3 +311,68 @@ def results(token: str):
             content={"error": "not_found", "detail": "This result has expired — analyse again."},
         )
     return FileResponse(path, media_type="video/webm")
+
+
+# --- Anonymous client-side usage beacon ------------------------------------------------
+# The frontend posts tiny fire-and-forget events here (a page view, which input they chose,
+# whether they saw a result). Allowlisted, size-capped, per-visitor rate-limited, and
+# best-effort: anything off-shape is silently dropped with a 204, never an error the page
+# has to handle. Only persists when TELEMETRY_DIR is set (else telemetry.record no-ops).
+_BEACON_EVENTS = {"page_view", "exercise_selected", "mode_changed",
+                  "input_ready", "result_viewed", "error_shown"}
+_BEACON_MAX_PER_HOUR = int(os.environ.get("BEACON_MAX_PER_HOUR", "600"))
+_beacon_calls: dict = {}
+_beacon_lock = threading.Lock()
+
+
+def _beacon_ok(key: str) -> bool:
+    """Rolling-hour cap per hashed IP, the same idea as llm_coach._rate_ok - keeps a loop or
+    a bad actor from flooding the trail. Fail-open on an empty key (allowed)."""
+    if _BEACON_MAX_PER_HOUR <= 0:
+        return True
+    now = time.time()
+    with _beacon_lock:
+        if len(_beacon_calls) > 10000:        # pathological cardinality -> reset, don't leak
+            _beacon_calls.clear()
+        times = [t for t in _beacon_calls.get(key, ()) if t > now - 3600]
+        if len(times) >= _BEACON_MAX_PER_HOUR:
+            _beacon_calls[key] = times
+            return False
+        times.append(now)
+        _beacon_calls[key] = times
+        return True
+
+
+@app.post("/e", status_code=204)
+async def beacon(request: Request):
+    # Read a small JSON body, keep only allowlisted events, stamp a hashed IP + truncated UA
+    # server-side, and record. Every early return is a 204 so a dropped beacon never surfaces
+    # as an error in the browser console.
+    try:
+        raw = await request.body()
+        if len(raw) > 4096:
+            return Response(status_code=204)
+        data = json.loads(raw or b"{}")
+    except Exception:
+        return Response(status_code=204)
+    if not isinstance(data, dict) or str(data.get("event") or "") not in _BEACON_EVENTS:
+        return Response(status_code=204)
+    iph = telemetry.ip_hash(request.client.host if request.client else None)
+    if not _beacon_ok(iph):
+        return Response(status_code=204)
+    props = data.get("props")
+    if not isinstance(props, dict) or len(json.dumps(props, default=str)) > 1024:
+        props = None
+    telemetry.record(str(data["event"]), src="web", cid=str(data.get("cid") or "")[:64],
+                     ip_hash=iph, ua=request.headers.get("user-agent", "")[:200], props=props)
+    return Response(status_code=204)
+
+
+@app.get("/admin/telemetry")
+def admin_telemetry(token: str = "", limit: int = 200):
+    # Read the trail back without SSHing into the box. Guarded by ADMIN_TOKEN (constant-time
+    # compare); unset or mismatched -> 403, so it is fail-closed by default.
+    secret = os.environ.get("ADMIN_TOKEN", "")
+    if not secret or not hmac.compare_digest(token, secret):
+        return JSONResponse(status_code=403, content={"error": "forbidden"})
+    return {"events": telemetry.read_recent(max(1, min(limit, 2000)))}

@@ -19,6 +19,7 @@ out/
 probe_out/
 angle_series.json
 angle_series.png
+telemetry/
 
 # ---- Large weights not used by the prod (mediapipe-lite) image ----
 models/pose_landmarker_heavy.task

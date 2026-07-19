@@ -18,6 +18,9 @@ probe_out/
 angle_series.json
 angle_series.png
 
+# ---- Local telemetry trail (TELEMETRY_DIR=./telemetry in dev; prod writes to a volume) ----
+telemetry/
+
 # ---- Large model weights (fetched at build time, never committed) ----
 models/pose_landmarker_lite.task
 models/pose_landmarker_heavy.task

@@ -7,6 +7,7 @@ import {
 import Image from "next/image";
 import { ChangeEvent, DragEvent, useCallback, useEffect, useRef, useState } from "react";
 import { fetchExercises, fetchProgress, MAX_VIDEO_MB, submitVideo, validateVideo } from "@/lib/api";
+import { track } from "@/lib/track";
 import { DEMO_SAMPLES, samplesForExercise } from "@/lib/samples";
 import type { AnalysisResult, AnalysisState, DemoSample, Exercise, ExerciseKey, InputMode, ProgressResponse } from "@/lib/types";
 import { CameraRecorder } from "./camera-recorder";
@@ -63,6 +64,9 @@ export function TrainerStudio() {
     return () => controller.abort();
   }, []);
 
+  // One anonymous "someone opened the app" beacon per page load.
+  useEffect(() => { track("page_view"); }, []);
+
   useEffect(() => () => {
     activeRequestRef.current?.abort();
     releaseOwnedPreview();
@@ -78,6 +82,7 @@ export function TrainerStudio() {
 
   function changeExercise(key: ExerciseKey) {
     if (busy) return;
+    track("exercise_selected", { exercise: key });
     setSelectedExercise(key);
     setError(null);
     setResult(null);
@@ -91,6 +96,7 @@ export function TrainerStudio() {
 
   function changeMode(nextMode: InputMode) {
     if (busy || nextMode === mode) return;
+    track("mode_changed", { mode: nextMode });
     releaseOwnedPreview();
     setMode(nextMode);
     setError(null);
@@ -115,6 +121,7 @@ export function TrainerStudio() {
     setPreviewUrl(sample.src);
     setError(null);
     setState("ready");
+    track("input_ready", { mode: "sample", grade: sample.grade, exercise: sample.exercise });
   }
 
   function setFile(file: File | null) {
@@ -132,6 +139,7 @@ export function TrainerStudio() {
     setPreviewUrl(url);
     setError(null);
     setState("ready");
+    track("input_ready", { mode: "upload" });
   }
 
   function handleFileInput(event: ChangeEvent<HTMLInputElement>) {
@@ -156,6 +164,7 @@ export function TrainerStudio() {
     setPreviewUrl(url);
     setError(null);
     setState("ready");
+    track("input_ready", { mode: "record" });
   }
 
   async function resolveInputFile(): Promise<File> {
@@ -183,13 +192,14 @@ export function TrainerStudio() {
       const issue = validateVideo(file);
       if (issue) throw new Error(issue);
       setProgress({ stage: "Uploading securely", pct: 6 });
-      const token = await submitVideo(file, selectedExercise, controller.signal);
+      const token = await submitVideo(file, selectedExercise, mode, controller.signal);
       setState("analyzing");
       await pollAnalysis(token, controller);
     } catch (caught) {
       if (controller.signal.aborted) return;
       setError(caught instanceof Error ? caught.message : "Something went wrong. Please try again.");
       setState("error");
+      track("error_shown", { where: "analyze" });
     }
   }
 
@@ -214,6 +224,7 @@ export function TrainerStudio() {
         setResult(update.result);
         setState("complete");
         setProgress({ stage: "Complete", pct: 100 });
+        track("result_viewed", { exercise: selectedExercise, reps: update.result.reps, verdict: update.result.verdict });
         window.setTimeout(() => document.querySelector("#results .results-heading")?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
         return;
       }

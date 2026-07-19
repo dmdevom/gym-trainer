@@ -35,10 +35,11 @@ export async function fetchExercises(signal?: AbortSignal): Promise<Exercise[]> 
   return data.exercises || [];
 }
 
-export async function submitVideo(file: File, exercise: ExerciseKey, signal?: AbortSignal): Promise<string> {
+export async function submitVideo(file: File, exercise: ExerciseKey, mode: string, signal?: AbortSignal): Promise<string> {
   const body = new FormData();
   body.append("file", file);
   body.append("exercise", exercise);
+  body.append("mode", mode);   // "sample"/"upload"/"record" — recorded server-side on the analysis event
   const response = await fetch(`${API_BASE_URL}/analyze/video`, { method: "POST", body, signal });
   if (response.status !== 202) {
     throw new ApiError(await readError(response, `Upload failed (${response.status}).`), response.status);
