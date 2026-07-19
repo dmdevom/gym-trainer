@@ -19,11 +19,10 @@ row, not a new code path.
 
 ```mermaid
 flowchart LR
-    HTML["templates/index.html<br/>(one page, all UI)"]
+    HTML["Browser UI<br/>web/ (Next.js) · templates/index.html"]
 
     subgraph API["main.py — FastAPI"]
         VID["POST /analyze/video<br/>+ /progress + /results"]
-        PHOTO["POST /analyze/photo"]
         EXAPI["GET /exercises · /health"]
     end
 
@@ -35,8 +34,6 @@ flowchart LR
         LLM["llm_coach.py"]
     end
 
-    ANALYZER["analyzer.py<br/>single-frame angle"]
-    BACKENDS["backends.py<br/>MediaPipe / YOLO"]
     MP["MediaPipe pose<br/>models/pose_landmarker_lite.task"]
     OR["OpenRouter API<br/>(optional, keyed)"]
     CFG["exercises.py<br/>Exercise table:<br/>joints · thresholds · cues"]
@@ -49,7 +46,6 @@ flowchart LR
     ANALYZE --> LLM
     VIDEO --> MP
     LLM --> OR
-    PHOTO --> ANALYZER --> BACKENDS --> MP
 
     CFG -.-> VIDEO
     CFG -.-> REPS
@@ -58,11 +54,12 @@ flowchart LR
     EXAPI -.-> CFG
 ```
 
-The **photo** path (`/analyze/photo → analyzer.py → backends.py`) is a separate,
-simpler branch left over from the Phase-0 POC: one frame in, one elbow angle out,
-and the pluggable MediaPipe/YOLO backend lives there. The **video** path — the
-product — uses MediaPipe's Tasks API in VIDEO mode directly (it needs tracking
-state across frames), which is why it doesn't go through `backends.py`.
+The pluggable MediaPipe/YOLO seam (`backends.py`, with `analyzer.py` as its
+single-frame harness) survives from the Phase-0 POC for offline work — the boot
+banner, `/health`, `scripts/compare_backends.py` — but no request path runs
+through it anymore. The **video** path — the product — uses MediaPipe's Tasks
+API in VIDEO mode directly (it needs tracking state across frames), which is why
+it doesn't go through `backends.py`.
 
 ---
 

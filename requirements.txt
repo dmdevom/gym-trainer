@@ -1,19 +1,25 @@
-# What RENDER installs. Deliberately no torch, no ultralytics.
+# What the prod image installs. Deliberately no torch, no ultralytics.
 # Everything here fits inside 512MB of RAM at runtime.
+# Pinned to the exact versions the app was built and verified against — an
+# unpinned mediapipe has broken a deploy before by drifting underneath us
+# (0.10.35 started dlopening GLES/EGL; see LEARNINGS.md #14 and the Dockerfile).
 
-fastapi
-uvicorn[standard]
-python-multipart          # UploadFile needs this. FastAPI won't tell you nicely.
-numpy
-opencv-python-headless    # NOT opencv-python — that one wants libGL, which is
-                          # not on Render's image. Textbook deploy-day crash.
-mediapipe                 # 0.10.31+ has tiny deps. ~200MB resident. No torch.
-openai                    # LLM coaching (llm_coach.py) via OpenRouter's OpenAI-
-                          # compatible API. Pure Python + httpx, no heavy deps.
-                          # Optional at runtime: absent key or import -> analysis
-                          # falls back to offline rule-based coaching, so the app
-                          # runs fine without a key.
-python-dotenv             # Local dev convenience: main.py auto-loads a gitignored
-                          # .env (OPENROUTER_API_KEY, LLM_LOG_FILE) so `uvicorn` picks
-                          # the key up with no exports. In prod the real env/secret is
-                          # already set and takes precedence (load_dotenv won't override).
+fastapi==0.139.0
+uvicorn[standard]==0.51.0
+python-multipart==0.0.32   # UploadFile needs this. FastAPI won't tell you nicely.
+numpy==2.2.6
+opencv-python-headless==5.0.0.93  # NOT opencv-python — that one wants a desktop GL
+                                  # stack the slim prod images don't have. Textbook
+                                  # deploy-day crash.
+mediapipe==0.10.35         # tiny deps, ~200MB resident, no torch. This exact version
+                           # dlopens GLES/EGL at import — the Dockerfile installs
+                           # libgles2/libegl1 to match.
+openai==2.46.0             # LLM coaching (llm_coach.py) via OpenRouter's OpenAI-
+                           # compatible API. Pure Python + httpx, no heavy deps.
+                           # Optional at runtime: absent key or import -> analysis
+                           # falls back to offline rule-based coaching, so the app
+                           # runs fine without a key.
+python-dotenv==1.2.2       # Local dev convenience: main.py auto-loads a gitignored
+                           # .env (OPENROUTER_API_KEY, LLM_LOG_FILE) so `uvicorn` picks
+                           # the key up with no exports. In prod the real env/secret is
+                           # already set and takes precedence (load_dotenv won't override).

@@ -25,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 import llm_coach
-from analyzer import CONF_MIN, analyze
+from analyzer import CONF_MIN
 from backends import get_backend
 from exercises import EXERCISES
 from render import annotate_video
@@ -35,8 +35,12 @@ from video import VideoError
 # would silently go nowhere — root sits at WARNING and nobody added a handler.
 log = logging.getLogger("uvicorn.error")
 
-MAX_BYTES = 8 * 1024 * 1024        # a photo. 512MB of RAM total. Be rude about limits.
-MAX_VIDEO_BYTES = 50 * 1024 * 1024  # a phone clip is big; still cap it hard.
+# Upload cap. The endpoint reads the whole file into RAM before writing it to
+# disk, so this bound doubles as the per-upload memory ceiling: raise MAX_UPLOAD_MB
+# for longer clips, but mind the container's memory - N concurrent uploads each
+# buffer up to this much (the render CPU is separately capped by RENDER_SEMAPHORE).
+MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "100"))
+MAX_VIDEO_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 
 TEMPLATES = Path(__file__).parent / "templates"
 
@@ -52,6 +56,12 @@ RESULTS_DIR = Path(tempfile.mkdtemp(prefix="gymtrainer-"))
 # result is disposable and there are no accounts. Pruned so a long-lived process on
 # Spaces doesn't slowly leak jobs and their rendered webms.
 JOBS: dict = {}
+
+# At most this many clips render at once; later uploads wait in line as "Queued".
+# MediaPipe + VP8 encoding saturate a core each and the deploy boxes have 2 vCPUs,
+# so unbounded concurrency just makes every progress bar crawl - and is a free DoS
+# on a public, anonymous endpoint. (The LLM call has its own hourly cap.)
+RENDER_SEMAPHORE = asyncio.Semaphore(int(os.environ.get("MAX_CONCURRENT_RENDERS", "2")))
 
 
 def _prune_jobs(max_age_s: float = 3600, max_jobs: int = 128) -> None:
@@ -128,34 +138,6 @@ def exercises():
     return {"exercises": [e.brief() for e in EXERCISES.values()]}
 
 
-@app.post("/analyze/photo")
-async def analyze_photo(file: UploadFile = File(...)):
-    if not (file.content_type or "").startswith("image/"):
-        return JSONResponse(
-            status_code=415,
-            content={"error": "not_an_image", "detail": f"Got {file.content_type}"},
-        )
-
-    data = await file.read(MAX_BYTES + 1)
-    if len(data) > MAX_BYTES:
-        return JSONResponse(
-            status_code=413,
-            content={"error": "too_large", "detail": "Max 8MB."},
-        )
-
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-        tmp.write(data)
-        path = tmp.name
-    try:
-        result = analyze(path)
-    finally:
-        os.unlink(path)
-
-    if "error" in result:
-        return JSONResponse(status_code=422, content=result)
-    return result
-
-
 async def _run_job(token: str, src: str, dst: str, exercise_key: str) -> None:
     """Do the slow work off to the side and report progress into JOBS[token].
 
@@ -163,23 +145,34 @@ async def _run_job(token: str, src: str, dst: str, exercise_key: str) -> None:
     /progress while this runs. annotate_video is sync and CPU-bound (seconds of
     MediaPipe + encoding), so it goes to the threadpool - and its progress callback
     is invoked FROM that worker thread, writing a couple of ints into the job dict,
-    which is safe enough under the GIL for a status line."""
+    which is safe enough under the GIL for a status line. RENDER_SEMAPHORE bounds
+    the concurrent renders; a waiting job says "Queued" instead of showing a stuck
+    bar. Finalizers go through JOBS.get because _prune_jobs may have evicted the
+    job mid-run - losing that result is fine, crashing the task is not."""
     def progress_cb(stage: str, pct) -> None:
         job = JOBS.get(token)
         if job is not None and not job["done"]:
             job["stage"] = stage
             job["pct"] = pct
 
+    def finish(**fields) -> None:
+        job = JOBS.get(token)
+        if job is not None:
+            job.update(fields)
+
     try:
-        summary = await run_in_threadpool(annotate_video, src, dst, exercise_key, progress_cb)
+        if RENDER_SEMAPHORE.locked():
+            progress_cb("Queued", 0)
+        async with RENDER_SEMAPHORE:
+            summary = await run_in_threadpool(annotate_video, src, dst, exercise_key, progress_cb)
         summary.pop("video", None)               # a local path; the browser gets a URL
         summary["video_url"] = f"/results/{token}"
-        JOBS[token].update(stage="Done", pct=100, done=True, result=summary)
+        finish(stage="Done", pct=100, done=True, result=summary)
     except VideoError as e:
-        JOBS[token].update(stage="Error", done=True, error=str(e))
+        finish(stage="Error", done=True, error=str(e))
     except Exception:
         log.exception("analysis failed for token %s", token)
-        JOBS[token].update(stage="Error", done=True, error="Analysis failed on this clip. Try another.")
+        finish(stage="Error", done=True, error="Analysis failed on this clip. Try another.")
     finally:
         Path(src).unlink(missing_ok=True)        # keep only the rendered .webm
 
@@ -205,7 +198,7 @@ async def analyze_video_endpoint(
     if len(data) > MAX_VIDEO_BYTES:
         return JSONResponse(
             status_code=413,
-            content={"error": "too_large", "detail": "Max 50MB. Trim it or drop the resolution."},
+            content={"error": "too_large", "detail": f"Max {MAX_UPLOAD_MB}MB. Trim it or drop the resolution."},
         )
 
     token = uuid.uuid4().hex

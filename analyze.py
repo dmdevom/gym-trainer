@@ -222,11 +222,15 @@ def coaching(grades: Sequence["object"], exercise: Exercise,
 
     if not reps:
         limb = "body" if exercise.vertex_name == "knee" else "arm"
+        finish = ("stand all the way up" if exercise.vertex_name == "knee"
+                  else "straighten your arm all the way")
         return {
-            "focus": "Get a clean side-on clip",
+            "focus": "Finish every rep, film side-on",
             "next_session": [
-                f"No full reps were counted - that's usually the camera angle, not "
-                f"you. Re-film side-on with your whole {limb} in frame and try again."
+                f"Re-film side-on with your whole {limb} in frame - a bad camera "
+                f"angle hides reps.",
+                f"Finish every rep: {finish} between reps. A rep that never returns "
+                f"to the start position doesn't get counted.",
             ],
             "keep_in_mind": list(exercise.tips),
             "muscle": exercise.muscle,

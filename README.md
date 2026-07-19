@@ -16,52 +16,99 @@ range-of-motion gauge, a tempo bar, per-rep form notes, and an end card that sum
 up the set and says what to work on next.
 
 Built for the namastedev.com hackathon. Pose estimation via MediaPipe Tasks,
-served with FastAPI, deployed on Hugging Face Spaces (Docker).
+served with FastAPI, a Next.js frontend in [`web/`](web/README.md), deployed on
+Hugging Face Spaces (Docker) and Railway.
 
-**▶ Live demo:** https://huggingface.co/spaces/dmdev261/ai-gym-trainer
+**▶ Live demo:** https://gym-trainer-web-ai.vercel.app
+
+**API (+ built-in fallback UI):** https://huggingface.co/spaces/dmdev261/ai-gym-trainer
 
 ## Try it
 
-Open `/`: pick an exercise, **upload or record** a side-on clip, watch a real
-progress bar, then get the annotated video next to a per-rep table, the angle
-chart, and a coaching card ("what to work on next session"). Or drive it directly:
+Open the [live demo](https://gym-trainer-web-ai.vercel.app): pick an exercise,
+try a bundled sample or **upload/record** a side-on clip, watch a real progress
+bar, then get the annotated video next to a per-rep table, the angle chart,
+form-check chips, and a coaching card ("what to work on next session"). The
+Space serves the same product through its built-in page. Or call the API
+directly:
 
-- `GET  /exercises` — the movements on offer (name + how to film each).
-- `POST /analyze/video` — a video (plus an `exercise` field) in, a `{token}` back.
-- `GET  /progress/{token}` — poll for `{stage, pct, done}`; the final payload
-  carries the full summary and a `/results/<id>` URL for the rendered `.webm`.
-- `POST /analyze/photo` — a single frame in, elbow angle + phase out.
+### API
+
+- `GET /exercises` — the movements on offer (name, filming tip, cues). The UI's
+  selector is fed from this so client and server can't drift.
+- `POST /analyze/video` — multipart `file` + `exercise` (`bicep_curl` ·
+  `barbell_curl` · `squat`) in, `202 {token}` back the moment the upload lands.
+  Accepts mp4/mov/webm/avi/mkv/m4v/3gp up to **100 MB** (`MAX_UPLOAD_MB`; `413`
+  over the cap, `415` if it doesn't look like video).
+- `GET /progress/{token}` — poll for `{stage, pct, done, error}`. `stage` walks
+  Starting → (Queued) → Analysing → Coaching → Generating → Done; the final
+  response also carries the full summary below. `404` once the job expires (~1 h).
+- `GET /results/{token}` — the rendered, annotated `.webm`. Same ~1 h lifetime.
+- `GET /health` — backend, model and LLM status. On Spaces this is your only
+  window in.
+
+### CLI (same pipeline, no server)
+
 - `python analyze.py clip.mp4` — the graded summary + coaching in your terminal
   (`EXERCISE=squat python analyze.py clip.mp4` for the others).
 - `python render.py clip.mp4` — just the annotated video, to `out/annotated.webm`.
 
-Example final `/progress` payload (the analysis summary):
+A real final `/progress` payload (squat sample, trimmed with `…`):
 
 ```json
 {
-  "meta": { "exercise": { "name": "Single-arm Bicep Curl", "vertex_name": "elbow" }, "side": "right" },
-  "reps": 3,
-  "full_reps": 3,
-  "verdict": "3/3 full reps",
+  "meta": {
+    "exercise": { "key": "squat", "name": "Squat", "vertex_name": "knee" },
+    "side": "right", "side_visibility": { "left": 0.62, "right": 0.928 },
+    "fps": 30.0, "stride": 3, "sample_hz": 10.0, "frames_sampled": 71,
+    "coaching_source": "llm+rules"
+  },
+  "reps": 2, "full_reps": 2, "verdict": "2/2 full reps",
   "per_rep": [
-    { "number": 1, "min_angle": 53.6, "depth_pct": 100, "duration_s": 2.7, "full": true, "tags": [], "issues": [] }
+    { "number": 1, "min_angle": 42.6, "depth_pct": 100, "duration_s": 1.9,
+      "full": true, "tags": [], "issues": [], "start_t": 1.5, "end_t": 3.4 },
+    { "number": 2, "min_angle": 52.7, "depth_pct": 100, "duration_s": 1.9,
+      "full": true, "tags": [], "issues": [], "start_t": 4.6, "end_t": 6.5 }
   ],
-  "coaching": { "focus": "Progressive overload", "next_session": ["…"], "keep_in_mind": ["…"], "muscle": "…" },
-  "video_url": "/results/…"
+  "form_checks": [
+    { "key": "lean", "label": "Chest up", "status": "ok", "assessed": 2, "flagged": 0,
+      "fault": "Folding forward at the bottom",
+      "cue": "Keep your chest up and sit between your hips instead of folding over." }
+  ],
+  "coaching": {
+    "focus": "Progressive overload", "mental_cue": "Add a little, hold form",
+    "session_story": "This was a solid set with two full range reps. …",
+    "next_session": ["Clean session - every rep full and controlled. …"],
+    "keep_in_mind": ["Sit back and down - break at the hips and knees together.", "…"],
+    "muscle": "Quads, glutes and hamstrings. …"
+  },
+  "thresholds": { "up_enter": 130.0, "down_enter": 155.0, "full_rom": 100.0,
+                  "gauge_deep": 70.0, "tempo_min_s": 1.3 },
+  "series": { "t": [0.0, 0.1, 0.2, "…"], "angle": [150.8, 159.6, 168.4, "…"] },
+  "video_url": "/results/54fb83c3…"
 }
 ```
+
+`form_checks` are the whole-body checks (torso swing, elbow drift, chest up) —
+each one is `ok`, `flag`, or honestly `not_assessed` when that body part never
+made it into frame.
 
 ## How it works
 
 ```
-exercises.py ->  each movement as data: which joints, which thresholds, which cues
+exercises.py ->  each movement as data: joints, thresholds, cues, form checks
 video.py     ->  a smoothed per-frame joint-angle series      (the signal)
 reps.py      ->  hysteresis state machine counts cycles,
-                 then grades each on depth + tempo             (the meaning)
+                 then grades each on depth + tempo + form      (the meaning)
 analyze.py   ->  summarize() + coaching(): one dict the CLI, API and video share
+llm_coach.py ->  optional LLM coaching prose; rules fallback on ANY failure
 render.py    ->  paints that summary onto every frame -> VP8/webm
-main.py      ->  FastAPI: the page, a job/poll progress model, serving the result
+main.py      ->  FastAPI: job/poll progress model, render queue, results
+backends.py  ->  pluggable MediaPipe/YOLO seam (boot banner, /health, benchmarks)
 ```
+
+[PIPELINE.md](PIPELINE.md) has the full diagrams: system overview, the job/poll
+request lifecycle, and the two-pass analysis pipeline.
 
 Three decisions worth knowing:
 
@@ -74,6 +121,17 @@ Three decisions worth knowing:
 - The annotated output is `.webm`/VP8 because that is the one format this OpenCV
   can *encode* and a browser can *play* — H.264 wouldn't open, and the mp4 it does
   write, the browser won't decode. See LEARNINGS.md #12.
+
+### Coaching: an LLM with a rules floor
+
+With an `OPENROUTER_API_KEY` set, the coaching card is written by an LLM
+(default `google/gemini-2.5-flash-lite` via OpenRouter) from this session's
+actual numbers — and validated hard. Wrong shape, empty reply, timeout, rate
+cap, refusal: *any* failure silently falls back to the offline rule-based coach,
+which produces the same shape. The LLM can add quality; it can never break the
+app. `meta.coaching_source` says which path wrote the card (`llm`, `rules`, or
+`llm+rules`), and calls are capped hourly because the endpoint is public and the
+key is yours.
 
 ## Why MediaPipe and not YOLO
 
@@ -93,27 +151,144 @@ cost, not accuracy. YOLO also pulls in torch (~200–350 MB resident): fine on H
 16 GB, but it's exactly what rules YOLO out on a 512 MB tier. MediaPipe ships;
 YOLO stays opt-in behind `POSE_BACKEND=yolo`. Details in [LEARNINGS.md](LEARNINGS.md) #9 and #11.
 
+## The web frontend (`web/`)
+
+A standalone Next.js 16 (React 19) app — the styled product UI: sample clips,
+upload/record, live progress, original-vs-annotated video side by side, angle
+chart, per-rep breakdown, form-check chips, coaching card. This is the live
+demo, deployed on Vercel: https://gym-trainer-web-ai.vercel.app
+
+```bash
+cd web && npm install
+BACKEND_API_URL=http://localhost:8000 npm run dev    # -> http://localhost:3000
+```
+
+The browser calls same-origin `/backend-api/*`, which Next rewrites server-side
+to `BACKEND_API_URL` — no CORS involved. **Left unset it defaults to the
+production Railway URL**, so a bare `npm run dev` exercises the live backend.
+Alternative mode: set `NEXT_PUBLIC_API_BASE_URL` to call an API straight from
+the browser, and add the frontend's origin to the backend's `CORS_ORIGINS`.
+More in [web/README.md](web/README.md).
+
+The API also serves a built-in, zero-build single-file page at `/`
+(`templates/index.html`) — same features, no Node required; `web/` is the
+primary UI.
+
 ## Running locally
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
+pip install -r requirements.txt      # pinned runtime deps; requirements-dev.txt
+                                     # adds YOLO + the benchmark tooling
 
 mkdir -p models
 wget -O models/pose_landmarker_lite.task \
   https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
 
-python reps.py                                 # the rep-counter's unit tests
-python analyze.py data/videos/curl_right.mp4   # graded summary in the terminal
-uvicorn main:app --reload                      # then open http://localhost:8000/
+cp .env.example .env                 # optional: your OpenRouter key for LLM coaching
+uvicorn main:app --reload            # -> http://localhost:8000/
 ```
 
-Compare the two backends on a real clip (needs the dev deps):
+Compare the two pose backends on a real clip (needs the dev deps):
 
 ```bash
-python scripts/compare_backends.py data/videos/curl_right.mp4
+python scripts/compare_backends.py path/to/clip.mp4
 ```
+
+## Tests
+
+```bash
+python reps.py       # rep counting, grading, form checks — the spec as tests
+python analyzer.py   # single-frame angle math sanity
+cd web && npm test && npm run typecheck && npm run lint
+```
+
+## Configuration
+
+All optional — with nothing set, the app runs offline with rule-based coaching.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `OPENROUTER_API_KEY` | *(unset)* | Enables LLM coaching; absent → rule-based. |
+| `LLM_MODEL` | `google/gemini-2.5-flash-lite` | Any non-reasoning model on openrouter.ai/models. |
+| `LLM_COACH` | on iff key set | Force the LLM path on/off (`1`/`0`). |
+| `LLM_MAX_CALLS_PER_HOUR` | `60` | Spend cap for a public endpoint on your key. |
+| `LLM_LOG_FILE` | *(off)* | `stderr` or a file path — log each LLM request/response. |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Alternate OpenAI-compatible endpoint. |
+| `POSE_BACKEND` | `mediapipe` | `yolo` opt-in (needs `requirements-dev.txt`). |
+| `POSE_MODEL` | `models/pose_landmarker_lite.task` | Which landmarker file to load. |
+| `MAX_CONCURRENT_RENDERS` | `2` | Renders running at once; extra jobs wait as "Queued". |
+| `MAX_UPLOAD_MB` | `100` | Upload size cap. Buffered in RAM per upload — mind container memory. |
+| `CORS_ORIGINS` | localhost:3000 dev origins | Comma-separated frontend origins allowed to call the API. |
+| `PORT` | `7860` | Injected by Railway; HF Spaces uses `app_port` above. |
+
+For local dev, `main.py` auto-loads a gitignored `.env` (template in
+`.env.example`); real environment variables always win over it.
+
+## Deploying
+
+**Hugging Face Spaces (Docker).** The front-matter at the top of this README
+*is* the Space config. The build bakes the lite model into the image (Space disk
+isn't persistent, so runtime downloads would repeat on every cold start). Push
+the working tree with the CLI — **`hf upload` does not read `.gitignore`**, so
+keep the excludes:
+
+```bash
+hf upload <account>/<space> . --repo-type space \
+  --exclude ".env" --exclude "data/*" --exclude "raw-docs/*" --exclude ".venv/*" \
+  --exclude "web/*" --exclude "node_modules/*" --exclude "out/*" --exclude "__pycache__/*"
+```
+
+**Railway.** `railway up` from the repo root (`.railwayignore` keeps the build
+context lean). The container binds `$PORT` when the platform injects one, else
+7860.
+
+**Secrets** (`OPENROUTER_API_KEY`) are platform env/secret variables in both
+cases — never in the repo, never baked into the image.
+
+**Frontend.** `web/` is deployed on Vercel at
+https://gym-trainer-web-ai.vercel.app with `BACKEND_API_URL` pointed at the
+Railway API; it builds and runs the same on any Node host (`npm run build &&
+npm run start`). The built-in page served straight from the API stays as a
+zero-deploy fallback.
+
+## Limitations (honest ones)
+
+- **One person, filmed side-on.** The tracker follows a single pose; mirrors or
+  bystanders in frame can steal it, and depth grading assumes the sagittal plane.
+- **Disposable by design.** No accounts, no history: jobs live in memory and
+  rendered videos in a temp dir, both pruned after ~1 h and gone on restart.
+- **Single worker.** The in-memory job table assumes one process (the shipped
+  CMD). Run `uvicorn --workers 2` and progress polling breaks.
+- **Three exercises**, thresholds tuned on a limited clip library — squat
+  thresholds especially are first-pass.
+- **100 MB upload cap** (`MAX_UPLOAD_MB`, buffered in RAM per upload); the Next
+  proxy in front of the deployed UI also caps bodies (`proxyClientMaxBodySize`);
+  renders queue two at a time on the 2-vCPU deploy boxes.
+
+## Project layout
+
+```
+main.py          FastAPI app: endpoints, job/poll model, render queue
+render.py        two-pass annotate_video: sparse detect, dense draw, VP8 writer
+analyze.py       summarize() — the one summary the JSON, video and CLI share
+reps.py          hysteresis rep counting + grading + form checks (and their tests)
+video.py         decode -> rotate -> pose -> smoothed joint-angle series
+exercises.py     the exercise table: joints, thresholds, cues, form checks
+llm_coach.py     LLM coaching with validation + rules fallback
+backends.py      pluggable pose backends (MediaPipe / opt-in YOLO)
+analyzer.py      single-frame angle harness (CLI + tests)
+templates/       built-in single-file UI served at /
+web/             Next.js frontend (own README + tests)
+scripts/         compare_backends.py benchmark
+models/          pose_landmarker_lite.task (baked into the Docker image)
+```
+
+Personal test footage (`data/`) stays local: gitignored and excluded from every
+deploy path.
 
 ## Notes
 
-See [LEARNINGS.md](LEARNINGS.md) for what broke and why.
+[LEARNINGS.md](LEARNINGS.md) is the honest engineering log — what broke and why,
+from deploy-day GLES crashes to codec dead ends to threshold tuning.
+[PIPELINE.md](PIPELINE.md) has the architecture diagrams.

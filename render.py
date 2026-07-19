@@ -63,6 +63,11 @@ from video import (
 MAX_SIDE = 960
 REF = float(MAX_SIDE)
 
+# Native <video> controls overlay the bottom strip of the frame and pin visible
+# while the player is paused or ended (~a fifth of the displayed height in this
+# app's players). Any HUD that must stay readable draws above this line.
+CONTROLS_SAFE_FRAC = 0.20
+
 # BlazePose-33 skeleton. MediaPipe deleted POSE_CONNECTIONS along with the legacy
 # API (LEARNINGS #6), so the edge list is ours to own. Face and fingers are left
 # off deliberately - detail the overlay doesn't need.
@@ -329,7 +334,9 @@ def _draw_rom_gauge(img, angle: Optional[float], thr: dict, k: float) -> None:
     h, w = img.shape[:2]
     bw = int(16 * k)
     x = w - int(34 * k)
-    top, bot = int(150 * k), h - int(150 * k)
+    top = int(150 * k)
+    # The bar may end at 150k, but the % label under it must clear the controls.
+    bot = h - max(int(150 * k), int(h * CONTROLS_SAFE_FRAC) + int(30 * k))
     lo, hi = thr["gauge_deep"], thr["down_enter"]        # top = deepest, bottom = extended
 
     def y_of(a: float) -> int:
@@ -357,25 +364,27 @@ def _draw_rom_gauge(img, angle: Optional[float], thr: dict, k: float) -> None:
 
 # --- the tempo bar --------------------------------------------------------
 
-def _draw_tempo(img, active: Optional[dict], target: float, k: float) -> None:
-    """A horizontal bar, bottom-left, that fills with the current rep's elapsed time
-    toward the controlled-tempo target (the tick at the far end). Green if that rep
-    ends controlled, red if it was rushed - we already graded it, so we can colour it
-    honestly as it happens. Idle between reps, it just names the target."""
-    h, w = img.shape[:2]
+def _draw_tempo(img, active: Optional[dict], target: float, k: float, y0: int) -> None:
+    """A horizontal bar that fills with the current rep's elapsed time toward the
+    controlled-tempo target (the tick at the far end). Green if that rep ends
+    controlled, red if it was rushed - we already graded it, so we can colour it
+    honestly as it happens. Idle between reps, it just names the target.
+
+    Anchored top-left under the header bar, NOT at the bottom: the bottom strip
+    belongs to the player's own controls, which sat exactly over the old spot."""
     x0, bw, bh = int(16 * k), int(120 * k), int(12 * k)
-    y0 = h - int(30 * k)
-    _shadow_text(img, "TEMPO", (x0, y0 - int(8 * k)), 0.5 * k, C_TEXT, k, 1)
-    cv2.rectangle(img, (x0, y0), (x0 + bw, y0 + bh), (55, 55, 55), -1)
-    cv2.line(img, (x0 + bw, y0 - int(3 * k)), (x0 + bw, y0 + bh + int(3 * k)), C_DIM, _thick(k, 1), cv2.LINE_AA)
+    _shadow_text(img, "TEMPO", (x0, y0), 0.5 * k, C_TEXT, k, 1)
+    bar_y = y0 + int(8 * k)
+    cv2.rectangle(img, (x0, bar_y), (x0 + bw, bar_y + bh), (55, 55, 55), -1)
+    cv2.line(img, (x0 + bw, bar_y - int(3 * k)), (x0 + bw, bar_y + bh + int(3 * k)), C_DIM, _thick(k, 1), cv2.LINE_AA)
 
     if active:
         frac = max(0.0, min(1.0, active["elapsed"] / active["target"]))
         col = C_RED if active["rushed"] else C_GREEN
-        cv2.rectangle(img, (x0, y0), (x0 + int(bw * frac), y0 + bh), col, -1)
-        _shadow_text(img, f"{active['elapsed']:.1f}s", (x0 + bw + int(9 * k), y0 + bh), 0.5 * k, col, k, 1)
+        cv2.rectangle(img, (x0, bar_y), (x0 + int(bw * frac), bar_y + bh), col, -1)
+        _shadow_text(img, f"{active['elapsed']:.1f}s", (x0 + bw + int(9 * k), bar_y + bh), 0.5 * k, col, k, 1)
     else:
-        _shadow_text(img, f"aim {target:.1f}s", (x0 + bw + int(9 * k), y0 + bh), 0.5 * k, C_DIM, k, 1)
+        _shadow_text(img, f"aim {target:.1f}s", (x0 + bw + int(9 * k), bar_y + bh), 0.5 * k, C_DIM, k, 1)
 
 
 # --- the per-rep flash + the running tally --------------------------------
@@ -419,7 +428,7 @@ def _draw_flash(img, flash, k: float) -> None:
     lines = _wrap(text, 0.6 * k, k, int(w * 0.88))
     lh = int(28 * k)
     box_h = lh * len(lines) + int(16 * k)
-    y0 = h - int(64 * k) - box_h
+    y0 = h - max(int(64 * k), int(h * CONTROLS_SAFE_FRAC)) - box_h
     ov = img.copy()
     cv2.rectangle(ov, (int(w * 0.04), y0), (int(w * 0.96), y0 + box_h), C_PANEL, -1)
     cv2.addWeighted(ov, 0.6, img, 0.4, 0, img)
@@ -450,7 +459,7 @@ def _draw_hud(img, exercise: Exercise, reps_done: int, total: int, tally: dict,
     _shadow_text(img, tally_txt, (w - _text_w(tally_txt, 0.5 * k, k, 1) - int(14 * k), r2), 0.5 * k, C_DIM, k, 1)
 
     _draw_rom_gauge(img, angle, thr, k)
-    _draw_tempo(img, active, thr["tempo_min_s"], k)
+    _draw_tempo(img, active, thr["tempo_min_s"], k, bar_h + int(24 * k))
     if flash:
         _draw_flash(img, flash, k)
 
@@ -460,48 +469,51 @@ def _draw_hud(img, exercise: Exercise, reps_done: int, total: int, tally: dict,
 def _draw_end_card(base: np.ndarray, summary: dict, exercise: Exercise, k: float) -> np.ndarray:
     """A few seconds tacked on the end so someone who watched nothing but the video
     still leaves with the verdict and the one thing to fix. The last frame, dimmed,
-    with the numbers on top."""
+    with the numbers on top. The card shows while the player sits at "ended" with
+    its controls pinned visible, so the type scale (kc) shrinks on short/landscape
+    frames until the last coaching line clears the controls strip."""
     img = base.copy()
     h, w = img.shape[:2]
     ov = img.copy()
     cv2.rectangle(ov, (0, 0), (w, h), (10, 10, 10), -1)
     cv2.addWeighted(ov, 0.82, img, 0.18, 0, img)
 
-    cx, y = w // 2, int(h * 0.24)
-    _center(img, exercise.name.upper(), cx, y, 0.75 * k, C_DIM, k, 1)
-    y += int(58 * k)
+    kc = min(k, h / 640.0)
+    cx, y = w // 2, int(h * 0.16)
+    _center(img, exercise.name.upper(), cx, y, 0.75 * kc, C_DIM, kc, 1)
+    y += int(58 * kc)
 
     reps, full = summary["reps"], summary["full_reps"]
     if reps == 0:
-        _center(img, "No full reps counted", cx, y, 0.95 * k, C_RED, k)
-        y += int(54 * k)
+        _center(img, "No full reps counted", cx, y, 0.95 * kc, C_RED, kc)
+        y += int(54 * kc)
     else:
-        _center(img, f"{full} / {reps}", cx, y, 2.1 * k, C_ARM, k, 3)
-        y += int(50 * k)
-        _center(img, "full reps", cx, y, 0.7 * k, C_TEXT, k)
-        y += int(46 * k)
+        _center(img, f"{full} / {reps}", cx, y, 2.1 * kc, C_ARM, kc, 3)
+        y += int(50 * kc)
+        _center(img, "full reps", cx, y, 0.7 * kc, C_TEXT, kc)
+        y += int(46 * kc)
         t = _tally(summary["per_rep"], 1e18)
         line = f"{t['full']} full    {t['shallow']} shallow    {t['rushed']} rushed"
         if t["form"]:
             line += f"    {t['form']} form"
-        _center(img, line, cx, y, 0.6 * k, C_DIM, k, 1)
-        y += int(54 * k)
+        _center(img, line, cx, y, 0.6 * kc, C_DIM, kc, 1)
+        y += int(54 * kc)
 
     c = summary["coaching"]
-    _center(img, "FOCUS NEXT", cx, y, 0.55 * k, C_DIM, k, 1)
-    y += int(34 * k)
-    _center(img, c["focus"], cx, y, 0.9 * k, C_GREEN, k)
-    y += int(44 * k)
+    _center(img, "FOCUS NEXT", cx, y, 0.55 * kc, C_DIM, kc, 1)
+    y += int(34 * kc)
+    _center(img, c["focus"], cx, y, 0.9 * kc, C_GREEN, kc)
+    y += int(44 * kc)
     # One short cue to hold in mind, in quotes so it reads as a coach's aside. Present
     # on both the LLM and rules paths; skipped if empty (e.g. the no-reps card).
     cue = c.get("mental_cue")
     if cue:
-        _center(img, f'"{cue}"', cx, y, 0.62 * k, C_YELLOW, k, 1)
-        y += int(36 * k)
+        _center(img, f'"{cue}"', cx, y, 0.62 * kc, C_YELLOW, kc, 1)
+        y += int(36 * kc)
     if c["next_session"]:
-        for ln in _wrap(c["next_session"][0], 0.55 * k, k, int(w * 0.82), max_lines=3):
-            _center(img, ln, cx, y, 0.55 * k, C_TEXT, k, 1)
-            y += int(28 * k)
+        for ln in _wrap(c["next_session"][0], 0.55 * kc, kc, int(w * 0.82), max_lines=3):
+            _center(img, ln, cx, y, 0.55 * kc, C_TEXT, kc, 1)
+            y += int(28 * kc)
     return img
 
 

@@ -22,6 +22,7 @@ models/pose_landmarker_heavy.task
 yolov8n-pose.pt
 
 # ---- Dev-only / non-runtime ----
+.env
 .git/
 data/
 scripts/
