@@ -1,8 +1,8 @@
 "use client";
 
 import {
-  Activity, ArrowRight, Camera, Check, ChevronRight, CircleAlert, Dumbbell,
-  FileVideo, Gauge, LoaderCircle, Play, RotateCcw, Sparkles, Upload, Video,
+  Activity, ArrowRight, Camera, Check, CircleAlert, Dumbbell,
+  FileVideo, Gauge, LoaderCircle, Play, RotateCcw, Sparkles, Timer, Upload, Video,
 } from "lucide-react";
 import Image from "next/image";
 import { ChangeEvent, DragEvent, useCallback, useEffect, useRef, useState } from "react";
@@ -24,6 +24,13 @@ const MODE_ITEMS: Array<{ id: InputMode; label: string; icon: React.ReactNode }>
   { id: "record", label: "Use camera", icon: <Camera size={17} /> },
 ];
 
+const HERO_INSIGHTS = [
+  { id: "reps", label: "Rep count", value: "4/5", status: "clean reps", title: "Rep 4 counted", detail: "Full extension confirmed" },
+  { id: "rom", label: "Range", value: "63°", status: "full ROM", title: "Depth target reached", detail: "100% range of motion" },
+  { id: "tempo", label: "Tempo", value: "2.3s", status: "controlled", title: "Tempo on target", detail: "Smooth lowering phase" },
+  { id: "coach", label: "Coaching", value: "1 cue", status: "next rep", title: "Keep your elbow pinned", detail: "Avoid shoulder drift" },
+] as const;
+
 export function TrainerStudio() {
   const [exercises, setExercises] = useState<Exercise[]>(FALLBACK_EXERCISES);
   const [selectedExercise, setSelectedExercise] = useState<ExerciseKey>("bicep_curl");
@@ -37,6 +44,7 @@ export function TrainerStudio() {
   const [progress, setProgress] = useState({ stage: "Ready", pct: 0 });
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [heroInsightIndex, setHeroInsightIndex] = useState(0);
   const activeRequestRef = useRef<AbortController | null>(null);
 
   const selectedExerciseInfo = exercises.find((exercise) => exercise.key === selectedExercise) || FALLBACK_EXERCISES[0];
@@ -61,6 +69,14 @@ export function TrainerStudio() {
     activeRequestRef.current?.abort();
     releaseOwnedPreview();
   }, [releaseOwnedPreview]);
+
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const timer = window.setInterval(() => {
+      setHeroInsightIndex((current) => (current + 1) % HERO_INSIGHTS.length);
+    }, 3600);
+    return () => window.clearInterval(timer);
+  }, []);
 
   function changeExercise(key: ExerciseKey) {
     if (busy) return;
@@ -200,7 +216,7 @@ export function TrainerStudio() {
         setResult(update.result);
         setState("complete");
         setProgress({ stage: "Complete", pct: 100 });
-        window.setTimeout(() => document.getElementById("results")?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
+        window.setTimeout(() => document.querySelector("#results .results-heading")?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
         return;
       }
       await new Promise((resolve) => window.setTimeout(resolve, 750));
@@ -226,6 +242,11 @@ export function TrainerStudio() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  function openSampleStudio() {
+    if (mode !== "sample") changeMode("sample");
+    window.setTimeout(() => document.getElementById("analyze")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  }
+
   return (
     <main>
       <nav className="site-nav">
@@ -237,19 +258,35 @@ export function TrainerStudio() {
         <div className="hero-copy">
           <span className="eyebrow"><Sparkles size={14} /> AI movement analysis</span>
           <h1>Train smarter.<br /><em>Move better.</em></h1>
-          <p>Upload or record a set. Get instant rep counting, form feedback, and a landmarked video that shows exactly what to improve.</p>
-          <a className="primary-button hero-button" href="#analyze">Analyze your workout <ChevronRight size={18} /></a>
+          <p>Upload or record one set. See every rep counted, graded, and explained — with a landmarked replay that shows exactly what to fix.</p>
+          <div className="hero-actions">
+            <button className="primary-button hero-button" type="button" onClick={openSampleStudio}><Play size={17} fill="currentColor" /> Try a sample</button>
+          </div>
           <div className="hero-signals"><span><i /> 3 exercises</span><span><i /> Rep-by-rep feedback</span><span><i /> Results in seconds</span></div>
         </div>
-        <div className="hero-visual" aria-hidden="true">
+        <div className="hero-visual">
           <div className="orbit orbit-one" /><div className="orbit orbit-two" />
-          <div className="hero-panel"><Image className="hero-photo" src="/hero-dumbbell-curl.jpg" alt="" fill sizes="(max-width: 700px) 330px, 390px" priority /><div className="hero-metric"><small>ELBOW ANGLE</small><strong>63°</strong><span>Full ROM</span></div></div>
-          <div className="floating-score"><BadgeIcon /><div><strong>4/5</strong><small>clean reps</small></div></div>
+          <div className="hero-panel">
+            <Image className="hero-photo" src="/hero-dumbbell-curl.jpg" alt="Athlete performing a dumbbell curl while trAIner analyzes the movement" fill sizes="(max-width: 700px) 330px, 390px" priority />
+            <div className="hero-analysis-status"><i /> Analyzing · Bicep curl</div>
+            <div className="hero-insight-stack" aria-label="Example analysis feedback">
+              {HERO_INSIGHTS.map((insight, index) => {
+                const position = (index - heroInsightIndex + HERO_INSIGHTS.length) % HERO_INSIGHTS.length;
+                return (
+                  <button key={insight.id} type="button" className={`hero-insight-card stack-${position}`} aria-hidden={position !== 0} tabIndex={position === 0 ? 0 : -1} onClick={() => position === 0 && setHeroInsightIndex((current) => (current + 1) % HERO_INSIGHTS.length)}>
+                    <span>{insight.id === "tempo" ? <Timer size={18} /> : insight.id === "rom" ? <Gauge size={18} /> : insight.id === "coach" ? <Sparkles size={18} /> : <Activity size={18} />}</span>
+                    <div><small>{insight.label}</small><strong>{insight.title}</strong><p>{insight.detail}</p></div>
+                    <div className="hero-insight-value"><strong>{insight.value}</strong><small>{insight.status}</small></div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       </section>
 
-      <section className="studio-section" id="analyze">
-        <div className="section-heading"><span className="eyebrow">01 · Pick your movement</span><h2>What are we analyzing?</h2><p>Choose an exercise, then try a sample or use your own video.</p></div>
+      <section className="studio-section">
+        <div className="section-heading" id="analyze"><span className="eyebrow">01 · Pick your movement</span><h2>What are we analyzing?</h2><p>Choose an exercise, then try a sample or use your own video.</p></div>
         <div className="exercise-grid">
           {exercises.map((exercise) => (
             <button key={exercise.key} type="button" className={`exercise-card ${selectedExercise === exercise.key ? "selected" : ""}`} onClick={() => changeExercise(exercise.key)} disabled={busy}>
@@ -307,8 +344,4 @@ export function TrainerStudio() {
       <footer><a className="brand" href="#top"><span>tr</span><strong>AI</strong><span>ner</span><i /></a><p>Built to make every rep count.</p></footer>
     </main>
   );
-}
-
-function BadgeIcon() {
-  return <span className="score-icon"><Activity size={20} /></span>;
 }

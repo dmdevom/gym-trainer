@@ -43,6 +43,8 @@ describe("CameraRecorder", () => {
 
     const start = await screen.findByRole("button", { name: "Start recording" });
     await waitFor(() => expect(start).toBeEnabled());
+    expect(screen.getByText("30 seconds max")).toBeInTheDocument();
+    expect(screen.getByText("Stops automatically")).toBeInTheDocument();
     expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith(expect.objectContaining({
       audio: false,
       video: expect.objectContaining({ facingMode: { ideal: "environment" } }),

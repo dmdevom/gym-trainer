@@ -5,8 +5,9 @@ export const API_BASE_URL = (
   "/backend-api"
 ).replace(/\/$/, "");
 
-// Keep in sync with the backend's MAX_UPLOAD_MB (default 500). Override at build
-// time with NEXT_PUBLIC_MAX_UPLOAD_MB; the backend is the real gatekeeper (413).
+// Keep in sync with the backend's MAX_UPLOAD_MB (default 100) and the Next proxy's
+// proxyClientMaxBodySize. Override at build time with NEXT_PUBLIC_MAX_UPLOAD_MB;
+// the backend is the real gatekeeper (413).
 export const MAX_VIDEO_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_MB) || 100;
 export const MAX_VIDEO_BYTES = MAX_VIDEO_MB * 1024 * 1024;
 export const ACCEPTED_VIDEO_EXTENSIONS = ["mp4", "mov", "webm", "avi", "mkv", "m4v", "3gp"];
