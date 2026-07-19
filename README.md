@@ -50,16 +50,22 @@ A real final `/progress` payload (squat sample, trimmed with `…`):
 {
   "meta": {
     "exercise": { "key": "squat", "name": "Squat", "vertex_name": "knee" },
-    "side": "right", "side_visibility": { "left": 0.62, "right": 0.928 },
-    "fps": 30.0, "stride": 3, "sample_hz": 10.0, "frames_sampled": 71,
-    "coaching_source": "llm+rules"
+    "side": "left", "side_visibility": { "left": 0.781, "right": 0.273 },
+    "fps": 30.0, "stride": 3, "sample_hz": 10.0, "frames_sampled": 60,
+    "coaching_source": "llm+rules", "rep_notes_source": "llm"
   },
   "reps": 2, "full_reps": 2, "verdict": "2/2 full reps",
   "per_rep": [
-    { "number": 1, "min_angle": 42.6, "depth_pct": 100, "duration_s": 1.9,
-      "full": true, "tags": [], "issues": [], "start_t": 1.5, "end_t": 3.4 },
-    { "number": 2, "min_angle": 52.7, "depth_pct": 100, "duration_s": 1.9,
-      "full": true, "tags": [], "issues": [], "start_t": 4.6, "end_t": 6.5 }
+    { "number": 1, "min_angle": 45.8, "depth_pct": 100, "duration_s": 1.9,
+      "full": true, "tags": [], "issues": [], "reason": null,
+      "flash_note": "Clean - full range and controlled",
+      "coach_note": ["You hit full range and controlled the descent well here.",
+                     "Keep the chest up on the way down as assessed."],
+      "start_t": 1.0, "end_t": 2.9 },
+    { "number": 2, "min_angle": 48.7, "depth_pct": 100, "duration_s": 1.8,
+      "full": true, "tags": [], "issues": [], "reason": null,
+      "flash_note": "Clean - full range and controlled", "coach_note": ["…"],
+      "start_t": 3.7, "end_t": 5.5 }
   ],
   "form_checks": [
     { "key": "lean", "label": "Chest up", "status": "ok", "assessed": 2, "flagged": 0,
@@ -68,21 +74,26 @@ A real final `/progress` payload (squat sample, trimmed with `…`):
   ],
   "coaching": {
     "focus": "Progressive overload", "mental_cue": "Add a little, hold form",
-    "session_story": "This was a solid set with two full range reps. …",
+    "session_story": "Both reps were performed with full range of motion and good control. …",
     "next_session": ["Clean session - every rep full and controlled. …"],
     "keep_in_mind": ["Sit back and down - break at the hips and knees together.", "…"],
     "muscle": "Quads, glutes and hamstrings. …"
   },
   "thresholds": { "up_enter": 130.0, "down_enter": 155.0, "full_rom": 100.0,
                   "gauge_deep": 70.0, "tempo_min_s": 1.3 },
-  "series": { "t": [0.0, 0.1, 0.2, "…"], "angle": [150.8, 159.6, 168.4, "…"] },
-  "video_url": "/results/54fb83c3…"
+  "series": { "t": [0.0, 0.1, 0.2, "…"], "angle": [170.5, 170.4, 170.2, "…"] },
+  "video_url": "/results/e9872d12…"
 }
 ```
 
-`form_checks` are the whole-body checks (torso swing, elbow drift, chest up) —
-each one is `ok`, `flag`, or honestly `not_assessed` when that body part never
-made it into frame.
+`form_checks` are the whole-body checks (torso swing, elbow drift, head bob,
+chest up) — each one is `ok`, `flag`, or honestly `not_assessed` when that body
+part never made it into frame. Every rep also carries its two display notes:
+`flash_note` (the one-line verdict burned onto the video) and `coach_note`
+(detail bullets for the rep table), written by the deterministic grader or by
+the LLM when its reply validates (`meta.rep_notes_source`). `reason` is `null`
+for a counted rep, or says why one didn't count (`under_extension` /
+`under_contraction`).
 
 ## How it works
 
@@ -92,7 +103,7 @@ video.py     ->  a smoothed per-frame joint-angle series      (the signal)
 reps.py      ->  hysteresis state machine counts cycles,
                  then grades each on depth + tempo + form      (the meaning)
 analyze.py   ->  summarize() + coaching(): one dict the CLI, API and video share
-llm_coach.py ->  optional LLM coaching prose; rules fallback on ANY failure
+llm_coach.py ->  optional LLM coaching card + per-rep notes; rules fallback on ANY failure
 render.py    ->  paints that summary onto every frame -> VP8/webm
 main.py      ->  FastAPI: job/poll progress model, render queue, results
 backends.py  ->  pluggable MediaPipe/YOLO seam (boot banner, /health, benchmarks)
@@ -115,14 +126,17 @@ Three decisions worth knowing:
 
 ### Coaching: an LLM with a rules floor
 
-With an `OPENROUTER_API_KEY` set, the coaching card is written by an LLM
-(default `google/gemini-2.5-flash-lite` via OpenRouter) from this session's
-actual numbers — and validated hard. Wrong shape, empty reply, timeout, rate
-cap, refusal: *any* failure silently falls back to the offline rule-based coach,
-which produces the same shape. The LLM can add quality; it can never break the
-app. `meta.coaching_source` says which path wrote the card (`llm`, `rules`, or
-`llm+rules`), and calls are capped hourly because the endpoint is public and the
-key is yours.
+With an `OPENROUTER_API_KEY` set, an LLM (default `google/gemini-2.5-flash-lite`
+via OpenRouter) writes the coaching card *and* each rep's display notes — the
+one-line flash burned onto the video and the bulleted note in the rep table —
+from this session's actual numbers, and the reply is validated hard. Wrong
+shape, empty reply, timeout, rate cap, refusal: *any* failure silently falls
+back to the offline rule-based coach, which produces the same shape. Rep notes
+are all-or-nothing on top: unless the reply covers every rep within the length
+caps, the deterministic grader text keeps the overlay. The LLM can add quality;
+it can never break the app. `meta.coaching_source` (`llm` · `rules` ·
+`llm+rules`) and `meta.rep_notes_source` (`llm` · `rules`) say who wrote what,
+and calls are capped hourly because the endpoint is public and the key is yours.
 
 ## Why MediaPipe and not YOLO
 

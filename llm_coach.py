@@ -36,8 +36,9 @@ Config, all via env so the Railway secret is the only switch:
   OPENROUTER_API_KEY      the key. Absent -> feature off, rules used.
   LLM_COACH               force on/off (1/0). Default: on iff a key is present.
   LLM_MODEL               override the model (vendor/model). Default
-                          openai/gpt-4.1-nano (a fast, non-reasoning model - see
-                          the DEFAULT_MODEL note on why reasoning models time out).
+                          google/gemini-2.5-flash-lite (a fast, non-reasoning model -
+                          see the DEFAULT_MODEL note on how it was chosen and why
+                          reasoning models time out).
   OPENROUTER_BASE_URL     override the API base (rarely needed).
   LLM_MAX_CALLS_PER_HOUR  cheap abuse cap for a public endpoint on our key.
   LLM_LOG_FILE            local dev only: trace each call's full request+response

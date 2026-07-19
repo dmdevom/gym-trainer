@@ -144,8 +144,8 @@ flowchart TD
         S4["form_feedback → RepGrade[]<br/>depth% + tempo + form · strict"]
         S5["_verdict — the one-line summary"]
         S6{"llm_coach.generate()?"}
-        S7["LLM prose (OpenRouter)"]
-        S8["analyze.coaching() — offline rules"]
+        S7["LLM card + per-rep notes<br/>(OpenRouter, validated)"]
+        S8["analyze.coaching() — offline rules<br/>+ the grader's own rep notes"]
         S9["summary dict:<br/>reps · per_rep · verdict · coaching<br/>· thresholds · series"]
         S1 --> S2 --> S3 --> S4 --> S5 --> S6
         S6 -->|valid reply| S7 --> S9
@@ -195,6 +195,9 @@ flowchart TD
   returns valid coaching *or* `None` on any failure (no key, timeout, bad JSON,
   refusal, rate cap, feature off). `None` falls back to the offline rule-based
   `analyze.coaching()`, so the card reads the same shape with or without a key.
+  Per-rep notes ride the same contract: the LLM's flash/coach text overlays the
+  grader's deterministic notes only if the reply covers every rep and passes the
+  length caps (`meta.rep_notes_source` says which text shipped).
 - **Sparse detect, dense draw.** Detection runs at `STRIDE=3`; the skeleton is
   interpolated between samples, never re-detected per frame — fast, and the count
   stays exact because it comes from the one detection pass.
