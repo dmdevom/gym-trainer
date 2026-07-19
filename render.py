@@ -356,7 +356,9 @@ def _draw_rom_gauge(img, angle: Optional[float], thr: dict, k: float) -> None:
         cv2.circle(img, (x + bw // 2, yc), _thick(k, 7), col, -1, cv2.LINE_AA)
 
     cx = x + bw // 2
-    _center(img, "ROM", cx, top - int(12 * k), 0.5 * k, C_TEXT, k, 1)
+    # Label in the gauge's current zone colour (dim when the limb is out of frame),
+    # so the whole meter reads as one traffic-light unit instead of white-on-bright.
+    _center(img, "ROM", cx, top - int(12 * k), 0.5 * k, _zone_color(angle, thr), k, 1)
     pct = _depth_pct(angle, thr)
     if pct is not None:
         _center(img, f"{pct:.0f}%", cx, bot + int(26 * k), 0.55 * k, _zone_color(angle, thr), k, 1)
@@ -364,24 +366,56 @@ def _draw_rom_gauge(img, angle: Optional[float], thr: dict, k: float) -> None:
 
 # --- the tempo bar --------------------------------------------------------
 
+# Fraction of the target at which the tempo bar turns from red to yellow; it goes
+# green only once the rep has actually reached the controlled-tempo target.
+TEMPO_YELLOW_FRAC = 0.6
+
+
+def _tempo_zone_color(frac: float):
+    """Traffic light on tempo, the same meaning as the ROM gauge: green once the rep
+    has taken long enough to be controlled, yellow as it approaches, red while it is
+    still too quick. `frac` is elapsed/target, so it climbs as the rep runs - a rep
+    that ends rushed never reaches the green target, so it never turns green."""
+    if frac >= 1.0:
+        return C_GREEN
+    if frac >= TEMPO_YELLOW_FRAC:
+        return C_YELLOW
+    return C_RED
+
+
 def _draw_tempo(img, active: Optional[dict], target: float, k: float, y0: int) -> None:
     """A horizontal bar that fills with the current rep's elapsed time toward the
-    controlled-tempo target (the tick at the far end). Green if that rep ends
-    controlled, red if it was rushed - we already graded it, so we can colour it
-    honestly as it happens. Idle between reps, it just names the target.
+    controlled-tempo target (the green tick at the far end). Red while the rep is
+    still too quick, yellow as it nears the target, green once it is controlled - the
+    same traffic light as the ROM gauge, and already graded so it is honest as it
+    happens. Idle between reps, it just names the target.
 
     Anchored top-left under the header bar, NOT at the bottom: the bottom strip
     belongs to the player's own controls, which sat exactly over the old spot."""
     x0, bw, bh = int(16 * k), int(120 * k), int(12 * k)
-    _shadow_text(img, "TEMPO", (x0, y0), 0.5 * k, C_TEXT, k, 1)
     bar_y = y0 + int(8 * k)
-    cv2.rectangle(img, (x0, bar_y), (x0 + bw, bar_y + bh), (55, 55, 55), -1)
-    cv2.line(img, (x0 + bw, bar_y - int(3 * k)), (x0 + bw, bar_y + bh + int(3 * k)), C_DIM, _thick(k, 1), cv2.LINE_AA)
+
+    # Traffic-light background ladder (dark tints, like the ROM gauge): red until the
+    # yellow line, yellow up to the green target tick.
+    yline = x0 + int(bw * TEMPO_YELLOW_FRAC)
+    cv2.rectangle(img, (x0, bar_y), (yline, bar_y + bh), BAND_RED, -1)
+    cv2.rectangle(img, (yline, bar_y), (x0 + bw, bar_y + bh), BAND_YELLOW, -1)
 
     if active:
         frac = max(0.0, min(1.0, active["elapsed"] / active["target"]))
-        col = C_RED if active["rushed"] else C_GREEN
+        col = _tempo_zone_color(frac)
         cv2.rectangle(img, (x0, bar_y), (x0 + int(bw * frac), bar_y + bh), col, -1)
+    else:
+        col = C_DIM
+
+    # Green target tick: reach it and the rep is controlled (mirrors the ROM gauge's
+    # green full-range line).
+    cv2.line(img, (x0 + bw, bar_y - int(3 * k)), (x0 + bw, bar_y + bh + int(3 * k)), C_GREEN, _thick(k, 2), cv2.LINE_AA)
+
+    # Label + read-out in the current zone colour, so the meter reads as one
+    # traffic-light unit rather than white text washing out over a bright frame.
+    _shadow_text(img, "TEMPO", (x0, y0), 0.5 * k, col, k, 1)
+    if active:
         _shadow_text(img, f"{active['elapsed']:.1f}s", (x0 + bw + int(9 * k), bar_y + bh), 0.5 * k, col, k, 1)
     else:
         _shadow_text(img, f"aim {target:.1f}s", (x0 + bw + int(9 * k), bar_y + bh), 0.5 * k, C_DIM, k, 1)
